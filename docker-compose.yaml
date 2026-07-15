@@ -1,0 +1,43 @@
+
+services:
+  app:
+    build:
+      context: .
+      target: builder   # use the builder stage locally so we get dev deps + hot reload
+    command: npm run start:dev
+    ports:
+      - '3000:3000'
+    volumes:
+      - .:/app
+      - /app/node_modules   # prevents host node_modules from overwriting container's
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgresql://lattice:lattice@postgres:5432/lattice
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - postgres
+      - redis
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=lattice
+      - POSTGRES_PASSWORD=lattice
+      - POSTGRES_DB=lattice
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:
