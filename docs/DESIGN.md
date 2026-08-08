@@ -114,6 +114,13 @@ convergence is guaranteed by the CRDT itself.
 
 ### 4.2 WebSocket Message Schema (`SyncModule`, raw `ws` gateway)
 
+> **Note (2026-08-09):** the sketch below predates ADR-0004's pivot to Yjs and still
+> shows `op: CRDTOperation` / `missingOps: CRDTOperation[]`, which never shipped (see
+> ADR-0004). The message *names* and flat JSON-envelope shape held up; the payloads
+> didn't — Yjs exchanges opaque binary updates and state vectors, not discrete ops. The
+> actual schema is `src/sync/protocol.ts`. SCRUM-34's ADR is where this section's
+> full rewrite belongs; until then, treat `src/sync/protocol.ts` as authoritative.
+
 All messages are JSON with a `type` discriminator:
 
 ```typescript
