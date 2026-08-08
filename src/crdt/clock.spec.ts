@@ -52,7 +52,11 @@ describe('LogicalClock', () => {
 
     it('increments monotonically on each call', () => {
       const clock = new LogicalClock('alice');
-      const counters = [clock.next().counter, clock.next().counter, clock.next().counter];
+      const counters = [
+        clock.next().counter,
+        clock.next().counter,
+        clock.next().counter,
+      ];
       expect(counters).toEqual([1, 2, 3]);
     });
 
@@ -112,7 +116,9 @@ describe('compareOperationId', () => {
     // satisfy compareOperationId(sorted[i], sorted[i+1]) <= 0. If the comparator were
     // inconsistent, sorting would produce contradictory adjacent pairs.
     for (let i = 0; i < sorted.length - 1; i++) {
-      expect(compareOperationId(sorted[i], sorted[i + 1])).toBeLessThanOrEqual(0);
+      expect(compareOperationId(sorted[i], sorted[i + 1])).toBeLessThanOrEqual(
+        0,
+      );
     }
   });
 });

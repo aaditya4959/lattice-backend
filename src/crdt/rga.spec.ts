@@ -3,7 +3,11 @@ import { LogicalClock } from './clock';
 import { InsertOp, OperationId } from './types';
 
 /** Small test helper: builds an InsertOp from a clock + value + leftOrigin. */
-function makeInsert(clock: LogicalClock, value: string, leftOrigin: OperationId): InsertOp {
+function makeInsert(
+  clock: LogicalClock,
+  value: string,
+  leftOrigin: OperationId,
+): InsertOp {
   return {
     type: 'insert',
     id: clock.next(),

@@ -1,6 +1,6 @@
 # ADR-0001: CRDT Approach — Hand-Roll First, Then Adopt Yjs
 
-**Status:** Accepted
+**Status:** Superseded by ADR-0004 (2026-08-09)
 **Date:** 2026-07-14
 **Ticket:** LAT-4
 

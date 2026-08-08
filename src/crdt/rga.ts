@@ -99,7 +99,10 @@ export class RGA {
     let precedingNode = originNode;
     let candidate = originNode.next;
 
-    while (candidate !== null && compareOperationId(candidate.id, newNode.id) > 0) {
+    while (
+      candidate !== null &&
+      compareOperationId(candidate.id, newNode.id) > 0
+    ) {
       precedingNode = candidate;
       candidate = candidate.next;
     }
@@ -117,7 +120,7 @@ export class RGA {
   has(id: OperationId): boolean {
     return this.nodes.has(idKey(id));
   }
-  // dummy commit 
+  // dummy commit
 
   /**
    * Renders the visible document as an array of values, in order, skipping tombstoned
