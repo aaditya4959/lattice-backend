@@ -65,7 +65,7 @@ Jira project key: `LAT` (epics: `LAT-E0` through `LAT-E5`)
   `SyncModule`, `PersistenceModule` — currently empty shells)
 - Jest configured and CI-enforced
 
-**In progress (Sprint 2 — `LAT-E1`, Core CRDT Engine):**
+**`LAT-E1` (Core CRDT Engine) — closed 2026-08-09, superseded by ADR-0004:**
 - ✅ `LAT-10`: RGA research + `docs/notes/rga-summary.md` written
 - ✅ `LAT-11`: `src/crdt/types.ts` — `OperationId`, `InsertOp`, `DeleteOp`,
   `CRDTOperation` union, `ROOT_ORIGIN` sentinel
@@ -77,22 +77,40 @@ Jira project key: `LAT` (epics: `LAT-E0` through `LAT-E5`)
   tie-break behavior. **Known documented simplification**: insert resolves position by
   direct ID comparison among immediate siblings — does not implement YATA's dual-origin
   refinement. This is intentional per ADR-0001, not a bug to silently fix.
-- ⏳ **`LAT-14` (NEXT UP)**: implement delete as tombstones — mark node `isDeleted =
-  true`, exclude from `toArray()`/`toString()` output. Node shape already has
-  `isDeleted` field ready for this.
-- ⏳ `LAT-15`: merge/apply-remote-op logic — apply an operation from another client
-  regardless of arrival order
-- ⏳ `LAT-16`: property-based/fuzz convergence test (fast-check) — the centerpiece
-  correctness proof for the whole engine
-- ⏳ `LAT-17`: performance benchmark (100/1k/10k ops) — document results in
-  `docs/notes/rga-benchmark.md`, expected to reveal O(n) lookup cost, justifying the
-  Yjs migration per ADR-0001
-- ⏳ `LAT-18`: ADR-0004 — hand-rolled CRDT learnings + Yjs migration plan
+  `src/crdt/` is **retained in the repo as a documented, tested reference artifact** —
+  it is not wired into production and not deleted.
+- ⛔ `LAT-14` (delete/tombstones), `LAT-15` (merge/apply-remote-op), `LAT-16`
+  (convergence fuzz test), `LAT-17` (performance benchmark), `LAT-18` (closing ADR) —
+  closed **won't-do**. The project pivoted to adopting Yjs directly for the production
+  sync engine rather than finishing the hand-rolled implementation. See
+  `docs/adr/0004-skip-handrolled-crdt-adopt-yjs-directly.md` for full reasoning.
+  `docs/adr/0001-crdt-approach.md` is now marked superseded by ADR-0004.
+
+**In progress (active sprint — `LAT-E1B`, Production Sync Engine: Yjs Integration):**
+- ⏳ Install and configure Yjs + `lib0` in the NestJS app
+- ⏳ Design the Yjs document schema for a Lattice doc (`Y.Text` for v1, per
+  `docs/DESIGN.md`'s non-goals — no rich structures yet)
+- ⏳ NestJS WebSocket sync gateway wired to Yjs, using raw `ws` per ADR-0002 (unchanged)
+  — state vector exchange + update broadcasting over that transport
+- ⏳ Per-doc connection registry + Redis pub/sub fan-out for Yjs updates across multiple
+  server instances (per `docs/DESIGN.md` §6)
+- ⏳ Postgres persistence: periodic snapshotting via `Y.encodeStateAsUpdate`, with
+  state-vector-based diffing for reconnect sync (reuses the `doc_snapshots` table from
+  `docs/DESIGN.md` §5)
+- ⏳ Reconnect/resync protocol using Yjs's state vector mechanism
+- ⏳ Minimal frontend client (Yjs + WebSocket provider matching the custom backend
+  protocol) to verify multi-tab/multi-browser real-time sync end-to-end
+- ⏳ Integration test: two simulated clients editing concurrently, assert convergence
+  via Yjs
+- ⏳ ADR documenting Yjs-specific integration decisions (e.g. how the sync protocol maps
+  onto the raw `ws` gateway)
 
 **Not started:**
-- `LAT-E2`: Real-time networking layer (WebSocket gateway, reconnect/resync protocol)
-- `LAT-E3`: Horizontal scaling & Redis fan-out
-- `LAT-E4`: Persistence & offline sync
+- `LAT-E2` / `LAT-E3` / `LAT-E4` (real-time networking layer, Redis fan-out, persistence
+  & offline sync) — **note:** `LAT-E1B`'s ticket list already substantially overlaps
+  this scope (WS gateway, Redis fan-out, and Postgres snapshotting are all `LAT-E1B`
+  tickets). Reconcile/retire E2–E4 against E1B when picked back up rather than
+  duplicating work.
 - `LAT-E5`: Product polish & launch
 
 ## Conventions Established So Far
