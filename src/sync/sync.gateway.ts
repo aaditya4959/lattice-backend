@@ -7,38 +7,46 @@ import {
 } from '@nestjs/websockets';
 import { fromBase64, toBase64 } from 'lib0/buffer';
 import * as Y from 'yjs';
-import type { RawData, WebSocket } from 'ws';
+import type { RawData } from 'ws';
+import {
+  ConnectionRegistryService,
+  LatticeSocket,
+} from './connection-registry.service';
 import { DocRegistryService } from './doc-registry.service';
 import { ClientMessage, ServerMessage } from './protocol';
+import { RedisFanoutService, UpdateEnvelope } from './redis-fanout.service';
 
 /**
- * A connected client's raw `ws` socket, tagged with the bits of state this gateway
- * needs to track per-connection: a server-issued id (used to skip echoing a client's
- * own update back to itself) and which doc it has joined, if any.
- */
-interface LatticeSocket extends WebSocket {
-  clientId: string;
-  docId?: string;
-}
-
-/**
- * The real-time sync gateway: raw `ws` per ADR-0002, wired to Yjs.
+ * The real-time sync gateway: raw `ws` per ADR-0002, wired to Yjs, fanned out across
+ * server instances via Redis (SCRUM-29).
  *
  * Deliberately does NOT use Nest's `@SubscribeMessage` decorator dispatch. That
  * mechanism (see `WsAdapter.bindMessageHandler` in `@nestjs/platform-ws`) requires
  * every incoming message to be shaped as `{ event, data }`, which would force a
  * different wire format than the flat `{ type, ... }` envelope DESIGN.md §4.2 already
  * establishes. Instead, `handleConnection` attaches a manual `message` listener and
- * dispatches on `type` itself — one more piece of connection-lifecycle plumbing
- * hand-built rather than delegated, consistent with ADR-0002's stated goal. Nest's own
- * internal message dispatch still runs alongside this (harmlessly, since it can never
- * match our messages' shape) — see SCRUM-28's implementation notes for detail.
+ * dispatches on `type` itself.
  *
- * Per-doc connection tracking (`docSockets`) is intentionally simple and in-process
- * only for this ticket. SCRUM-29 formalizes it into a proper registry and adds Redis
- * pub/sub so this works across more than one server instance.
+ * Broadcasting a client's update — even to other clients on this SAME instance —
+ * always goes through Redis (`handleUpdate` publishes; `handleRemoteUpdate` is what
+ * actually sends to local sockets), rather than a separate direct-broadcast path.
+ * This isn't an accident: per DESIGN.md §6's architecture flow, "any op broadcast by
+ * any instance... is published to Redis → all subscribed instances receive it and
+ * forward to their locally connected clients" — there is one fan-out path, used
+ * uniformly, not two. It also means an instance normally receives its own publishes
+ * back through its own subscription whenever it has local clients on that doc; that's
+ * expected, and `handleRemoteUpdate` skips re-sending to the originating client by
+ * `clientId`, not by "was this instance the publisher."
  *
- * Ticket: SCRUM-28 (LAT-E1B)
+ * `handleJoin` subscribes to Redis *before* reading the doc's current state for the
+ * `joined` response, not after — subscribing first guarantees no update can land in
+ * the gap between "read the snapshot" and "start receiving live updates." Redis
+ * SUBSCRIBE is acknowledged synchronously from the client's perspective (the awaited
+ * promise resolves only once the subscription is active), so once `subscribe()`
+ * resolves, every update published from that instant on is guaranteed to arrive via
+ * `handleRemoteUpdate`, with zero overlap-or-gap against the snapshot already read.
+ *
+ * Ticket: SCRUM-29 (LAT-E1B)
  */
 @WebSocketGateway({ path: '/sync' })
 export class SyncGateway
@@ -47,9 +55,12 @@ export class SyncGateway
     OnGatewayDisconnect<LatticeSocket>
 {
   private readonly logger = new Logger(SyncGateway.name);
-  private readonly docSockets = new Map<string, Set<LatticeSocket>>();
 
-  constructor(private readonly docs: DocRegistryService) {}
+  constructor(
+    private readonly docs: DocRegistryService,
+    private readonly connections: ConnectionRegistryService,
+    private readonly fanout: RedisFanoutService,
+  ) {}
 
   handleConnection(client: LatticeSocket): void {
     client.clientId = randomUUID();
@@ -59,8 +70,12 @@ export class SyncGateway
   }
 
   handleDisconnect(client: LatticeSocket): void {
-    if (client.docId) {
-      this.docSockets.get(client.docId)?.delete(client);
+    if (!client.docId) return;
+    const isEmpty = this.connections.remove(client.docId, client);
+    if (isEmpty) {
+      this.fanout
+        .unsubscribe(client.docId)
+        .catch((err: unknown) => this.logger.error(err));
     }
   }
 
@@ -92,13 +107,17 @@ export class SyncGateway
 
     switch (message.type) {
       case 'join':
-        this.handleJoin(client, message.docId);
+        this.handleJoin(client, message.docId).catch((err: unknown) =>
+          this.logger.error(err),
+        );
         return;
       case 'sync-request':
         this.handleSyncRequest(client, message.docId, message.stateVector);
         return;
       case 'update':
-        this.handleUpdate(client, message.docId, message.update);
+        this.handleUpdate(client, message.docId, message.update).catch(
+          (err: unknown) => this.logger.error(err),
+        );
         return;
       default:
         this.send(client, {
@@ -110,14 +129,17 @@ export class SyncGateway
   }
 
   /** Subscribes the client to a doc's broadcast group and hands back its full current state. */
-  private handleJoin(client: LatticeSocket, docId: string): void {
+  private async handleJoin(
+    client: LatticeSocket,
+    docId: string,
+  ): Promise<void> {
     client.docId = docId;
-    let sockets = this.docSockets.get(docId);
-    if (!sockets) {
-      sockets = new Set();
-      this.docSockets.set(docId, sockets);
+    const isFirstLocalClient = this.connections.add(docId, client);
+    if (isFirstLocalClient) {
+      await this.fanout.subscribe(docId, (envelope) =>
+        this.handleRemoteUpdate(docId, envelope),
+      );
     }
-    sockets.add(client);
 
     const doc = this.docs.getOrCreate(docId);
     this.send(client, {
@@ -142,33 +164,34 @@ export class SyncGateway
     });
   }
 
-  /** Applies a client's update to the authoritative doc, then fans it out to peers. */
-  private handleUpdate(
+  /** Applies a client's update to the authoritative doc, then publishes it for fan-out. */
+  private async handleUpdate(
     client: LatticeSocket,
     docId: string,
     updateB64: string,
-  ): void {
+  ): Promise<void> {
     const doc = this.docs.getOrCreate(docId);
     Y.applyUpdate(doc, fromBase64(updateB64));
-    this.broadcast(docId, client, {
-      type: 'update',
-      docId,
-      update: updateB64,
+    await this.fanout.publish(docId, {
       fromClientId: client.clientId,
+      update: updateB64,
     });
   }
 
-  /** Sends `message` to every other client subscribed to `docId` — never back to `origin`. */
-  private broadcast(
-    docId: string,
-    origin: LatticeSocket,
-    message: ServerMessage,
-  ): void {
-    const sockets = this.docSockets.get(docId);
-    if (!sockets) return;
-    for (const socket of sockets) {
-      if (socket === origin) continue;
-      this.send(socket, message);
+  /** Fired for every update on `docId`'s Redis channel — including ones this instance just published. */
+  private handleRemoteUpdate(docId: string, envelope: UpdateEnvelope): void {
+    const doc = this.docs.getOrCreate(docId);
+    // Idempotent: a no-op if this instance already applied it locally in handleUpdate.
+    Y.applyUpdate(doc, fromBase64(envelope.update));
+
+    for (const socket of this.connections.getSockets(docId)) {
+      if (socket.clientId === envelope.fromClientId) continue;
+      this.send(socket, {
+        type: 'update',
+        docId,
+        update: envelope.update,
+        fromClientId: envelope.fromClientId,
+      });
     }
   }
 
