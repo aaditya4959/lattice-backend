@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
+import { WsAdapter } from '@nestjs/platform-ws';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
@@ -13,6 +14,10 @@ describe('AppController (e2e)', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
+    // AppModule now includes SyncGateway (SCRUM-28); without an explicit adapter, Nest
+    // tries to auto-load the default (socket.io) driver on init and crashes — see
+    // ADR-0002 for why this project uses raw `ws` instead.
+    app.useWebSocketAdapter(new WsAdapter(app));
     await app.init();
   });
 
