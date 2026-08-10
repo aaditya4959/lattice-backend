@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { WsAdapter } from '@nestjs/platform-ws';
@@ -70,7 +71,7 @@ describe('Sync fan-out across server instances (e2e)', () => {
   });
 
   it('delivers an update applied on instance A to a client connected to instance B, via Redis', async () => {
-    const docId = `e2e-fanout-${Date.now()}`;
+    const docId = randomUUID();
 
     const clientOnA = new WebSocket(instanceA.url);
     const clientOnB = new WebSocket(instanceB.url);
@@ -107,7 +108,7 @@ describe('Sync fan-out across server instances (e2e)', () => {
   });
 
   it("updates instance B's own doc registry, not just the one already-open socket", async () => {
-    const docId = `e2e-fanout-serverstate-${Date.now()}`;
+    const docId = randomUUID();
 
     // B needs a local client BEFORE A publishes — B only subscribes to a doc's Redis
     // channel once it has at least one local client on it (DESIGN.md §6), and Redis
