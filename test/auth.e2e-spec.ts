@@ -127,4 +127,42 @@ describe('Auth (e2e)', () => {
       .send({ email: `${Date.now()}@nonexistent.test`, password: 'whatever' })
       .expect(401);
   });
+
+  // GET /auth/me is JwtAuthGuard's first real use (SCRUM-38) — never actually
+  // exercised by a test until now. Worth being explicit: this proves the guard's
+  // dependency (JwtService) actually resolves via AuthModule's DI graph at runtime,
+  // not just that the code compiles.
+  it('returns the authenticated user via /auth/me with a valid token', async () => {
+    const email = `${Date.now()}@example.test`;
+    const password = 'correct horse battery';
+    await request(app.getHttpServer())
+      .post('/auth/register')
+      .send({ email, password })
+      .expect(201);
+    const loginResponse = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ email, password })
+      .expect(200);
+    const { accessToken } = loginResponse.body as LoginResponseBody;
+
+    const response = await request(app.getHttpServer())
+      .get('/auth/me')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(200);
+    const body = response.body as { sub: string; email: string };
+
+    expect(body.email).toBe(email);
+    expect(typeof body.sub).toBe('string');
+  });
+
+  it('rejects /auth/me with no Authorization header', async () => {
+    await request(app.getHttpServer()).get('/auth/me').expect(401);
+  });
+
+  it('rejects /auth/me with a garbage token', async () => {
+    await request(app.getHttpServer())
+      .get('/auth/me')
+      .set('Authorization', 'Bearer not-a-real-jwt')
+      .expect(401);
+  });
 });
