@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Lattice — sync verification client</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; }
+    textarea { width: 100%; height: 300px; font-family: ui-monospace, monospace; font-size: 14px; padding: 8px; box-sizing: border-box; }
+    #status { font-size: 13px; color: #666; margin-bottom: 8px; }
+    #status.connected { color: #0a7c2f; }
+    #status.disconnected { color: #b3261e; }
+  </style>
+</head>
+<body>
+  <h1>Lattice sync verification</h1>
+  <p>Open this same URL in another tab/browser to test real-time sync. Doc: <code id="doc-id"></code></p>
+  <div id="status">connecting…</div>
+  <textarea id="editor" placeholder="Start typing…"></textarea>
+
+  <script type="module">
+    // SCRUM-32: a minimal manual-verification harness for the sync engine, not a
+    // reusable editor component and not the real product frontend (see ADR
+    // discussion — this repo stays backend-only; a real frontend, if/when built,
+    // gets its own repo). Deliberately dependency-free — no bundler, no
+    // y-websocket — so it's a single file readable top to bottom, speaking our own
+    // wire protocol (src/sync/protocol.ts) directly.
+    import * as Y from 'https://esm.sh/yjs@13.6.32';
+    import { toBase64, fromBase64 } from 'https://esm.sh/lib0@0.2.117/buffer';
+
+    const params = new URLSearchParams(location.search);
+    let docId = params.get('doc');
+    if (!docId) {
+      docId = crypto.randomUUID();
+      params.set('doc', docId);
+      history.replaceState(null, '', `${location.pathname}?${params}`);
+    }
+    document.getElementById('doc-id').textContent = docId;
+
+    const doc = new Y.Doc();
+    const ytext = doc.getText('content');
+    const REMOTE = Symbol('remote'); // origin tag for updates applied FROM the server
+
+    const editor = document.getElementById('editor');
+    const statusEl = document.getElementById('status');
+
+    function setStatus(text, cls) {
+      statusEl.textContent = text;
+      statusEl.className = cls;
+    }
+
+    // Renders ytext into the textarea, preserving cursor position (shifted by the
+    // length delta) so a remote update doesn't yank the caret to the end mid-typing.
+    function render() {
+      const value = ytext.toString();
+      if (editor.value === value) return;
+      const { selectionStart, selectionEnd } = editor;
+      const lengthDelta = value.length - editor.value.length;
+      editor.value = value;
+      editor.selectionStart = selectionStart + lengthDelta;
+      editor.selectionEnd = selectionEnd + lengthDelta;
+    }
+
+    ytext.observe(() => render());
+
+    // Turns "what changed in the textarea" into a single Yjs edit via longest
+    // common prefix/suffix — not a real diff algorithm, just enough for one
+    // insert+delete per keystroke or paste.
+    editor.addEventListener('input', () => {
+      const oldValue = ytext.toString();
+      const newValue = editor.value;
+
+      let prefix = 0;
+      while (
+        prefix < oldValue.length &&
+        prefix < newValue.length &&
+        oldValue[prefix] === newValue[prefix]
+      ) {
+        prefix++;
+      }
+
+      let oldEnd = oldValue.length;
+      let newEnd = newValue.length;
+      while (
+        oldEnd > prefix &&
+        newEnd > prefix &&
+        oldValue[oldEnd - 1] === newValue[newEnd - 1]
+      ) {
+        oldEnd--;
+        newEnd--;
+      }
+
+      doc.transact(() => {
+        if (oldEnd > prefix) ytext.delete(prefix, oldEnd - prefix);
+        if (newEnd > prefix) ytext.insert(prefix, newValue.slice(prefix, newEnd));
+      });
+    });
+
+    let socket;
+    let reconnectDelay = 500;
+
+    function connect() {
+      socket = new WebSocket(`ws://${location.hostname}:3000/sync`);
+
+      socket.addEventListener('open', () => {
+        setStatus('connected', 'connected');
+        reconnectDelay = 500;
+        send({ type: 'join', docId });
+      });
+
+      socket.addEventListener('message', (event) => {
+        const message = JSON.parse(event.data);
+        switch (message.type) {
+          case 'joined':
+            Y.applyUpdate(doc, fromBase64(message.initialState), REMOTE);
+            // Catch up on anything missed since our last known state, per SCRUM-31's
+            // reconnect protocol — a no-op diff on a first-ever join.
+            send({ type: 'sync-request', docId, stateVector: toBase64(Y.encodeStateVector(doc)) });
+            break;
+          case 'sync-response':
+          case 'update':
+            Y.applyUpdate(doc, fromBase64(message.update), REMOTE);
+            break;
+          case 'error':
+            console.error('[lattice] server error', message.code, message.message);
+            break;
+        }
+      });
+
+      socket.addEventListener('close', () => {
+        setStatus('disconnected — reconnecting…', 'disconnected');
+        setTimeout(connect, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, 5000);
+      });
+
+      socket.addEventListener('error', () => socket.close());
+    }
+
+    function send(message) {
+      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+    }
+
+    doc.on('update', (update, origin) => {
+      if (origin === REMOTE) return; // don't echo the server's own updates back to it
+      send({ type: 'update', docId, update: toBase64(update) });
+    });
+
+    connect();
+  </script>
+</body>
+</html>
