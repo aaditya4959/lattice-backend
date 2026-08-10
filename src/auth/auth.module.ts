@@ -3,6 +3,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { PersistenceModule } from '../persistence/persistence.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { JwtAuthGuard } from './jwt-auth.guard';
 import { UsersService } from './users.service';
 
 @Module({
@@ -19,7 +20,10 @@ import { UsersService } from './users.service';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, UsersService],
-  exports: [JwtModule],
+  providers: [AuthService, UsersService, JwtAuthGuard],
+  // JwtAuthGuard exported explicitly (not left to Nest's implicit class-reference
+  // resolution) so other modules importing AuthModule — DocsModule, SCRUM-39 — can
+  // reliably use `@UseGuards(JwtAuthGuard)` with its JwtService dependency resolved.
+  exports: [JwtModule, JwtAuthGuard],
 })
 export class AuthModule {}
