@@ -114,20 +114,16 @@ export class SyncGateway
 
     switch (message.type) {
       case 'join':
-        this.handleJoin(client, message.docId).catch((err: unknown) =>
-          this.logger.error(err),
-        );
+        this.handleJoin(client, message.docId).catch((err: unknown) => this.handleFailure(client, err));
         return;
       case 'sync-request':
-        this.handleSyncRequest(
-          client,
-          message.docId,
-          message.stateVector,
-        ).catch((err: unknown) => this.logger.error(err));
+        this.handleSyncRequest(client, message.docId, message.stateVector).catch((err: unknown) =>
+          this.handleFailure(client, err),
+        );
         return;
       case 'update':
-        this.handleUpdate(client, message.docId, message.update).catch(
-          (err: unknown) => this.logger.error(err),
+        this.handleUpdate(client, message.docId, message.update).catch((err: unknown) =>
+          this.handleFailure(client, err),
         );
         return;
       default:
@@ -217,5 +213,21 @@ export class SyncGateway
     } catch (err) {
       this.logger.error(err);
     }
+  }
+
+  /**
+   * A handler throwing (bad docId, DB error, etc.) used to be silent from the
+   * client's perspective — logged server-side only, nothing sent back, so a failure
+   * just looked like nothing happening. Surfacing it as an `error` message too, not
+   * just logging it, so it's at least visible in the browser console instead of
+   * indistinguishable from "no update was ever sent."
+   */
+  private handleFailure(client: LatticeSocket, err: unknown): void {
+    this.logger.error(err);
+    this.send(client, {
+      type: 'error',
+      code: 'internal-error',
+      message: err instanceof Error ? err.message : 'Unexpected server error',
+    });
   }
 }
