@@ -22,11 +22,22 @@
 
 export type ClientMessage =
   | { type: 'join'; docId: string }
+  /**
+   * The reconnect/resync protocol (SCRUM-31): a client that already holds a copy of
+   * the doc (from a prior `joined`, persisted locally, or just never having fully
+   * disconnected) sends its own state vector — Yjs's compact summary of what it's
+   * already seen (see src/sync/yjs.smoke.spec.ts) — instead of re-requesting the
+   * whole document. Nothing distinguishes "reconnecting after a drop" from any other
+   * `sync-request` at the protocol level; the state vector alone is sufficient for
+   * the server to compute exactly the diff, whether that's "everything" (an empty
+   * state vector) or "the last three ops that happened while you were offline."
+   */
   | { type: 'sync-request'; docId: string; stateVector: string }
   | { type: 'update'; docId: string; update: string };
 
 export type ServerMessage =
   | { type: 'joined'; docId: string; initialState: string }
+  /** The other half of the reconnect/resync protocol — see `sync-request` above. */
   | { type: 'sync-response'; docId: string; update: string }
   | { type: 'update'; docId: string; update: string; fromClientId: string }
   | { type: 'error'; code: string; message: string };
