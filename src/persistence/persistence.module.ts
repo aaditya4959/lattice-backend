@@ -32,7 +32,10 @@ const snapshotIntervalProvider: Provider = {
     snapshotIntervalProvider,
     ...postgresProviders,
   ],
-  exports: [SnapshotService, SnapshotSchedulerService],
+  // PG_POOL itself is exported, not just the snapshot-specific services above — other
+  // modules (AuthModule's UsersService, later DocsModule) need direct raw query
+  // access, not everything routed through persistence's own domain services.
+  exports: [SnapshotService, SnapshotSchedulerService, PG_POOL],
 })
 export class PersistenceModule implements OnModuleInit, OnModuleDestroy {
   constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
