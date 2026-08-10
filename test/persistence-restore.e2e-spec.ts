@@ -7,10 +7,11 @@ import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { fromBase64, toBase64 } from 'lib0/buffer';
-import { Client } from 'pg';
+import { Client, Pool } from 'pg';
 import * as Y from 'yjs';
 import WebSocket from 'ws';
 import { AppModule } from '../src/app.module';
+import { PG_POOL } from '../src/persistence/postgres.provider';
 import { SNAPSHOT_INTERVAL_MS } from '../src/persistence/snapshot-scheduler.service';
 import { ClientMessage, ServerMessage } from '../src/sync/protocol';
 
@@ -38,6 +39,7 @@ async function isPostgresReachable(): Promise<boolean> {
 async function createInstance(): Promise<{
   app: INestApplication;
   url: string;
+  module: TestingModule;
 }> {
   const module: TestingModule = await Test.createTestingModule({
     imports: [AppModule],
@@ -50,7 +52,24 @@ async function createInstance(): Promise<{
   app.useWebSocketAdapter(new WsAdapter(app));
   await app.listen(0);
   const baseUrl = (await app.getUrl()).replace(/^http/, 'ws');
-  return { app, url: `${baseUrl}/sync` };
+  return { app, url: `${baseUrl}/sync`, module };
+}
+
+/**
+ * Inserts a user + doc row directly (no AuthModule/DocsModule yet — those are later
+ * LAT-E2 tickets) so `docId` satisfies doc_snapshots' FK, added in this same ticket
+ * (SCRUM-36).
+ */
+async function seedDocRow(pool: Pool, docId: string): Promise<void> {
+  const ownerId = randomUUID();
+  await pool.query(
+    'INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)',
+    [ownerId, `${ownerId}@example.test`, 'not-a-real-hash'],
+  );
+  await pool.query(
+    'INSERT INTO docs (id, owner_id, title) VALUES ($1, $2, $3)',
+    [docId, ownerId, 'Test doc'],
+  );
 }
 
 function waitForOpen(socket: WebSocket): Promise<void> {
@@ -115,6 +134,8 @@ describe('Persistence — restore from snapshot (e2e, real Postgres required)', 
     // its in-memory DocRegistryService is gone once app.close() resolves. Anything
     // the second instance sees has to come from Postgres, not a live process.
     const first = await createInstance();
+    await seedDocRow(first.module.get(PG_POOL), docId);
+
     const firstClient = new WebSocket(first.url);
     await waitForOpen(firstClient);
     const firstJoined = waitForMessage(firstClient);
