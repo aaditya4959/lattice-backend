@@ -113,12 +113,28 @@ Known gap, documented not fixed: a client reconnecting to a *different* server i
 with no prior local subscriber for that doc can see slightly stale state (Redis pub/sub
 has no memory; snapshots are throttled, not immediate) — see ADR-0005's Consequences.
 
+**In progress (active sprint — `LAT-E2`, repurposed: Accounts & Documents — Auth + REST API):**
+Original `LAT-E2` scope ("real-time networking layer") is done, absorbed into
+`LAT-E1B` — this slot now covers what DESIGN.md §4.1/§5 always specified but was never
+built: there is currently no `docs`/`users` table and `SyncGateway` accepts any
+`docId` from any client with zero authorization.
+- ⏳ `users`/`docs`/`doc_collaborators` schema bootstrap; add the FK from
+  `doc_snapshots.doc_id` → `docs.id` (missing since SCRUM-30)
+- ⏳ `POST /auth/register` / `POST /auth/login` — password hashing + JWT
+- ⏳ Auth guard for REST routes + token validation on `join` (DESIGN.md's `join.token`
+  field, deferred since SCRUM-28 — no AuthModule existed yet)
+- ⏳ `DocsModule`: create/list docs
+- ⏳ `DocsModule`: doc metadata, delete, invite collaborator
+- ⏳ Authorize `SyncGateway` joins against real doc ownership/collaboration — the
+  actual fix for the zero-authorization gap above
+- ⏳ Integration test: full register → login → create doc → join → edit → invite flow
+- ⏳ ADR: auth strategy decisions
+
+`LAT-E3` / `LAT-E4` (horizontal scaling, persistence & offline sync) — same as before,
+already absorbed into `LAT-E1B`'s Redis fan-out and Postgres snapshotting. No separate
+work planned under those numbers.
+
 **Not started:**
-- `LAT-E2` / `LAT-E3` / `LAT-E4` (real-time networking layer, Redis fan-out, persistence
-  & offline sync) — **note:** `LAT-E1B` already covered this scope (WS gateway, Redis
-  fan-out, Postgres snapshotting). Retire or fold any remaining distinct scope from
-  E2–E4 into future tickets rather than treating them as still-open as originally
-  written.
 - `LAT-E5`: Product polish & launch
 
 ## Conventions Established So Far
