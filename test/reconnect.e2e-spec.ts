@@ -1,37 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import { Test, TestingModule } from '@nestjs/testing';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { fromBase64, toBase64 } from 'lib0/buffer';
 import * as Y from 'yjs';
 import WebSocket from 'ws';
 import { AppModule } from '../src/app.module';
-import { ClientMessage, ServerMessage } from '../src/sync/protocol';
-
-function waitForOpen(socket: WebSocket): Promise<void> {
-  return new Promise((resolve) => socket.once('open', () => resolve()));
-}
-
-function waitForMessage(socket: WebSocket): Promise<ServerMessage> {
-  return new Promise((resolve) => {
-    socket.once('message', (data: Buffer) => {
-      resolve(JSON.parse(data.toString()) as ServerMessage);
-    });
-  });
-}
-
-function send(socket: WebSocket, message: ClientMessage): void {
-  socket.send(JSON.stringify(message));
-}
-
-function textOf(doc: Y.Doc): string {
-  // eslint-disable-next-line @typescript-eslint/no-base-to-string
-  return doc.getText('content').toString();
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+import { signTestToken } from './helpers/auth';
+import { textOf } from './helpers/yjs';
+import { send, sleep, waitForMessage, waitForOpen } from './helpers/ws';
 
 /**
  * Proves SCRUM-31's acceptance criteria: a client that goes offline, misses
@@ -47,6 +25,7 @@ function sleep(ms: number): Promise<void> {
 describe('Reconnect / resync protocol (e2e)', () => {
   let app: INestApplication;
   let url: string;
+  let token: string;
 
   beforeEach(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -58,6 +37,7 @@ describe('Reconnect / resync protocol (e2e)', () => {
     await app.listen(0);
     const baseUrl = (await app.getUrl()).replace(/^http/, 'ws');
     url = `${baseUrl}/sync`;
+    token = await signTestToken(moduleFixture.get(JwtService));
   });
 
   afterEach(async () => {
@@ -71,7 +51,7 @@ describe('Reconnect / resync protocol (e2e)', () => {
     const socketA = new WebSocket(url);
     await waitForOpen(socketA);
     const joinedA = waitForMessage(socketA);
-    send(socketA, { type: 'join', docId });
+    send(socketA, { type: 'join', docId, token });
     await joinedA;
 
     const docA = new Y.Doc();
@@ -93,7 +73,7 @@ describe('Reconnect / resync protocol (e2e)', () => {
     const socketB = new WebSocket(url);
     await waitForOpen(socketB);
     const joinedB = waitForMessage(socketB);
-    send(socketB, { type: 'join', docId });
+    send(socketB, { type: 'join', docId, token });
     const joinedMessageB = await joinedB;
     if (joinedMessageB.type !== 'joined') throw new Error('unreachable');
 
@@ -114,7 +94,7 @@ describe('Reconnect / resync protocol (e2e)', () => {
     const socketA2 = new WebSocket(url);
     await waitForOpen(socketA2);
     const rejoined = waitForMessage(socketA2);
-    send(socketA2, { type: 'join', docId });
+    send(socketA2, { type: 'join', docId, token });
     await rejoined;
 
     const syncResponse = waitForMessage(socketA2);
