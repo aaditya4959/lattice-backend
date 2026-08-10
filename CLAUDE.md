@@ -86,31 +86,39 @@ Jira project key: `LAT` (epics: `LAT-E0` through `LAT-E5`)
   `docs/adr/0004-skip-handrolled-crdt-adopt-yjs-directly.md` for full reasoning.
   `docs/adr/0001-crdt-approach.md` is now marked superseded by ADR-0004.
 
-**In progress (active sprint — `LAT-E1B`, Production Sync Engine: Yjs Integration):**
-- ⏳ Install and configure Yjs + `lib0` in the NestJS app
-- ⏳ Design the Yjs document schema for a Lattice doc (`Y.Text` for v1, per
-  `docs/DESIGN.md`'s non-goals — no rich structures yet)
-- ⏳ NestJS WebSocket sync gateway wired to Yjs, using raw `ws` per ADR-0002 (unchanged)
-  — state vector exchange + update broadcasting over that transport
-- ⏳ Per-doc connection registry + Redis pub/sub fan-out for Yjs updates across multiple
-  server instances (per `docs/DESIGN.md` §6)
-- ⏳ Postgres persistence: periodic snapshotting via `Y.encodeStateAsUpdate`, with
-  state-vector-based diffing for reconnect sync (reuses the `doc_snapshots` table from
-  `docs/DESIGN.md` §5)
-- ⏳ Reconnect/resync protocol using Yjs's state vector mechanism
-- ⏳ Minimal frontend client (Yjs + WebSocket provider matching the custom backend
-  protocol) to verify multi-tab/multi-browser real-time sync end-to-end
-- ⏳ Integration test: two simulated clients editing concurrently, assert convergence
-  via Yjs
-- ⏳ ADR documenting Yjs-specific integration decisions (e.g. how the sync protocol maps
-  onto the raw `ws` gateway)
+**`LAT-E1B` (Production Sync Engine: Yjs Integration) — closed 2026-08-10, all nine tickets done:**
+- ✅ Yjs + `lib0` installed; `src/sync/yjs.smoke.spec.ts` proves the basic roundtrip
+- ✅ Doc schema: one `Y.Text` per doc (`src/sync/doc-schema.ts`), per `docs/DESIGN.md`'s
+  non-goals — no rich structures yet
+- ✅ `SyncGateway` (`src/sync/sync.gateway.ts`) — raw `ws` per ADR-0002, hand-rolled
+  message dispatch (not `@SubscribeMessage`, see ADR-0005), state vector exchange +
+  update broadcasting
+- ✅ `ConnectionRegistryService` + `RedisFanoutService` — per-doc Redis pub/sub fan-out
+  across instances (`docs/DESIGN.md` §6); one unified broadcast path, not a separate
+  local-vs-cross-instance split (ADR-0005 §2)
+- ✅ `PersistenceModule` — throttled Postgres snapshotting (`SnapshotSchedulerService`),
+  state-vector-based diffing for resync (`doc_snapshots`, `docs/DESIGN.md` §5). No FK to
+  `docs.id` yet (table doesn't exist)
+- ✅ Reconnect/resync protocol — `sync-request`/`sync-response`, proven to actually diff
+  (not just converge) in `test/reconnect.e2e-spec.ts`
+- ✅ `client/index.html` — minimal manual-verification harness (not the product
+  frontend; stays in this repo, no separate frontend repo), hand-rolled protocol
+  provider, manually verified working across tabs
+- ✅ `test/convergence.e2e-spec.ts` — concurrent-edit convergence including a
+  deterministic out-of-order-application proof
+- ✅ `docs/adr/0005-yjs-integration-decisions.md` — full writeup of the integration
+  decisions above
+
+Known gap, documented not fixed: a client reconnecting to a *different* server instance
+with no prior local subscriber for that doc can see slightly stale state (Redis pub/sub
+has no memory; snapshots are throttled, not immediate) — see ADR-0005's Consequences.
 
 **Not started:**
 - `LAT-E2` / `LAT-E3` / `LAT-E4` (real-time networking layer, Redis fan-out, persistence
-  & offline sync) — **note:** `LAT-E1B`'s ticket list already substantially overlaps
-  this scope (WS gateway, Redis fan-out, and Postgres snapshotting are all `LAT-E1B`
-  tickets). Reconcile/retire E2–E4 against E1B when picked back up rather than
-  duplicating work.
+  & offline sync) — **note:** `LAT-E1B` already covered this scope (WS gateway, Redis
+  fan-out, Postgres snapshotting). Retire or fold any remaining distinct scope from
+  E2–E4 into future tickets rather than treating them as still-open as originally
+  written.
 - `LAT-E5`: Product polish & launch
 
 ## Conventions Established So Far
