@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { WsAdapter } from '@nestjs/platform-ws';
@@ -51,7 +52,7 @@ describe('SyncGateway (e2e)', () => {
   });
 
   it('answers a sync-request with exactly the update the requester is missing', async () => {
-    const docId = `e2e-sync-request-${Date.now()}`;
+    const docId = randomUUID();
 
     const writer = new WebSocket(url);
     await waitForOpen(writer);
@@ -98,7 +99,7 @@ describe('SyncGateway (e2e)', () => {
   });
 
   it("broadcasts one client's update to the other, and both converge", async () => {
-    const docId = `e2e-broadcast-${Date.now()}`;
+    const docId = randomUUID();
 
     const clientA = new WebSocket(url);
     const clientB = new WebSocket(url);

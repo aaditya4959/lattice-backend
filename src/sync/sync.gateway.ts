@@ -8,6 +8,7 @@ import {
 import { fromBase64, toBase64 } from 'lib0/buffer';
 import * as Y from 'yjs';
 import type { RawData } from 'ws';
+import { SnapshotSchedulerService } from '../persistence/snapshot-scheduler.service';
 import {
   ConnectionRegistryService,
   LatticeSocket,
@@ -18,7 +19,7 @@ import { RedisFanoutService, UpdateEnvelope } from './redis-fanout.service';
 
 /**
  * The real-time sync gateway: raw `ws` per ADR-0002, wired to Yjs, fanned out across
- * server instances via Redis (SCRUM-29).
+ * server instances via Redis (SCRUM-29), snapshotted to Postgres (SCRUM-30).
  *
  * Deliberately does NOT use Nest's `@SubscribeMessage` decorator dispatch. That
  * mechanism (see `WsAdapter.bindMessageHandler` in `@nestjs/platform-ws`) requires
@@ -46,7 +47,12 @@ import { RedisFanoutService, UpdateEnvelope } from './redis-fanout.service';
  * resolves, every update published from that instant on is guaranteed to arrive via
  * `handleRemoteUpdate`, with zero overlap-or-gap against the snapshot already read.
  *
- * Ticket: SCRUM-29 (LAT-E1B)
+ * `handleRemoteUpdate` also schedules a snapshot write on every update, not
+ * `handleUpdate` — it's the one place every update flows through regardless of origin
+ * (locally-originated updates come back through it too, via the instance's own
+ * subscription), so scheduling there covers all cases with one call site.
+ *
+ * Ticket: SCRUM-30 (LAT-E1B)
  */
 @WebSocketGateway({ path: '/sync' })
 export class SyncGateway
@@ -60,6 +66,7 @@ export class SyncGateway
     private readonly docs: DocRegistryService,
     private readonly connections: ConnectionRegistryService,
     private readonly fanout: RedisFanoutService,
+    private readonly snapshotScheduler: SnapshotSchedulerService,
   ) {}
 
   handleConnection(client: LatticeSocket): void {
@@ -112,7 +119,11 @@ export class SyncGateway
         );
         return;
       case 'sync-request':
-        this.handleSyncRequest(client, message.docId, message.stateVector);
+        this.handleSyncRequest(
+          client,
+          message.docId,
+          message.stateVector,
+        ).catch((err: unknown) => this.logger.error(err));
         return;
       case 'update':
         this.handleUpdate(client, message.docId, message.update).catch(
@@ -141,7 +152,7 @@ export class SyncGateway
       );
     }
 
-    const doc = this.docs.getOrCreate(docId);
+    const doc = await this.docs.getOrCreate(docId);
     this.send(client, {
       type: 'joined',
       docId,
@@ -150,12 +161,12 @@ export class SyncGateway
   }
 
   /** Computes and returns exactly what the client is missing, per its state vector. */
-  private handleSyncRequest(
+  private async handleSyncRequest(
     client: LatticeSocket,
     docId: string,
     stateVectorB64: string,
-  ): void {
-    const doc = this.docs.getOrCreate(docId);
+  ): Promise<void> {
+    const doc = await this.docs.getOrCreate(docId);
     const missing = Y.encodeStateAsUpdate(doc, fromBase64(stateVectorB64));
     this.send(client, {
       type: 'sync-response',
@@ -170,7 +181,7 @@ export class SyncGateway
     docId: string,
     updateB64: string,
   ): Promise<void> {
-    const doc = this.docs.getOrCreate(docId);
+    const doc = await this.docs.getOrCreate(docId);
     Y.applyUpdate(doc, fromBase64(updateB64));
     await this.fanout.publish(docId, {
       fromClientId: client.clientId,
@@ -179,10 +190,14 @@ export class SyncGateway
   }
 
   /** Fired for every update on `docId`'s Redis channel — including ones this instance just published. */
-  private handleRemoteUpdate(docId: string, envelope: UpdateEnvelope): void {
-    const doc = this.docs.getOrCreate(docId);
+  private async handleRemoteUpdate(
+    docId: string,
+    envelope: UpdateEnvelope,
+  ): Promise<void> {
+    const doc = await this.docs.getOrCreate(docId);
     // Idempotent: a no-op if this instance already applied it locally in handleUpdate.
     Y.applyUpdate(doc, fromBase64(envelope.update));
+    this.snapshotScheduler.schedule(docId, doc);
 
     for (const socket of this.connections.getSockets(docId)) {
       if (socket.clientId === envelope.fromClientId) continue;

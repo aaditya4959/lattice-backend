@@ -1,4 +1,4 @@
-import { Inject, Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import Redis from 'ioredis';
 import { REDIS_PUBLISHER, REDIS_SUBSCRIBER } from './redis.provider';
 
@@ -21,12 +21,12 @@ function channelFor(docId: string): string {
  *
  * Ticket: SCRUM-29 (LAT-E1B)
  */
+type UpdateHandler = (envelope: UpdateEnvelope) => void | Promise<void>;
+
 @Injectable()
 export class RedisFanoutService implements OnModuleDestroy {
-  private readonly handlers = new Map<
-    string,
-    (envelope: UpdateEnvelope) => void
-  >();
+  private readonly logger = new Logger(RedisFanoutService.name);
+  private readonly handlers = new Map<string, UpdateHandler>();
 
   constructor(
     @Inject(REDIS_PUBLISHER) private readonly publisher: Redis,
@@ -34,7 +34,11 @@ export class RedisFanoutService implements OnModuleDestroy {
   ) {
     this.subscriber.on('message', (channel: string, raw: string) => {
       const docId = channel.slice('doc:'.length);
-      this.handlers.get(docId)?.(JSON.parse(raw) as UpdateEnvelope);
+      const handler = this.handlers.get(docId);
+      if (!handler) return;
+      Promise.resolve(handler(JSON.parse(raw) as UpdateEnvelope)).catch(
+        (err: unknown) => this.logger.error(err),
+      );
     });
   }
 
@@ -43,10 +47,7 @@ export class RedisFanoutService implements OnModuleDestroy {
   }
 
   /** Subscribes to `docId`'s channel and registers the handler for its messages. */
-  async subscribe(
-    docId: string,
-    onMessage: (envelope: UpdateEnvelope) => void,
-  ): Promise<void> {
+  async subscribe(docId: string, onMessage: UpdateHandler): Promise<void> {
     this.handlers.set(docId, onMessage);
     await this.subscriber.subscribe(channelFor(docId));
   }
