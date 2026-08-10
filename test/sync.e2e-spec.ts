@@ -1,39 +1,20 @@
 import { randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import { Test, TestingModule } from '@nestjs/testing';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { fromBase64, toBase64 } from 'lib0/buffer';
 import * as Y from 'yjs';
 import WebSocket from 'ws';
 import { AppModule } from '../src/app.module';
-import { ClientMessage, ServerMessage } from '../src/sync/protocol';
-
-function waitForOpen(socket: WebSocket): Promise<void> {
-  return new Promise((resolve) => socket.once('open', () => resolve()));
-}
-
-function waitForMessage(socket: WebSocket): Promise<ServerMessage> {
-  return new Promise((resolve) => {
-    socket.once('message', (data: Buffer) => {
-      resolve(JSON.parse(data.toString()) as ServerMessage);
-    });
-  });
-}
-
-function send(socket: WebSocket, message: ClientMessage): void {
-  socket.send(JSON.stringify(message));
-}
-
-// Y.Text.toString() isn't declared on YText in Yjs's shipped .d.ts (see
-// src/sync/yjs.smoke.spec.ts) — same known gap, same suppression, used throughout.
-function textOf(doc: Y.Doc): string {
-  // eslint-disable-next-line @typescript-eslint/no-base-to-string
-  return doc.getText('content').toString();
-}
+import { signTestToken } from './helpers/auth';
+import { textOf } from './helpers/yjs';
+import { send, sleep, waitForMessage, waitForOpen } from './helpers/ws';
 
 describe('SyncGateway (e2e)', () => {
   let app: INestApplication;
   let url: string;
+  let token: string;
 
   beforeEach(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -45,6 +26,7 @@ describe('SyncGateway (e2e)', () => {
     await app.listen(0);
     const baseUrl = (await app.getUrl()).replace(/^http/, 'ws');
     url = `${baseUrl}/sync`;
+    token = await signTestToken(moduleFixture.get(JwtService));
   });
 
   afterEach(async () => {
@@ -57,7 +39,7 @@ describe('SyncGateway (e2e)', () => {
     const writer = new WebSocket(url);
     await waitForOpen(writer);
     const writerJoined = waitForMessage(writer);
-    send(writer, { type: 'join', docId });
+    send(writer, { type: 'join', docId, token });
     await writerJoined;
 
     // Seed the server's doc via a normal client update.
@@ -68,11 +50,12 @@ describe('SyncGateway (e2e)', () => {
       docId,
       update: toBase64(Y.encodeStateAsUpdate(seedDoc)),
     });
+    await sleep(30); // let the server apply it before the reader asks for a diff
 
     const reader = new WebSocket(url);
     await waitForOpen(reader);
     const readerJoined = waitForMessage(reader);
-    send(reader, { type: 'join', docId });
+    send(reader, { type: 'join', docId, token });
     await readerJoined;
 
     // A fresh reader's state vector is empty, so sync-response should hand back the
@@ -106,11 +89,11 @@ describe('SyncGateway (e2e)', () => {
     await Promise.all([waitForOpen(clientA), waitForOpen(clientB)]);
 
     const joinedA = waitForMessage(clientA);
-    send(clientA, { type: 'join', docId });
+    send(clientA, { type: 'join', docId, token });
     await joinedA;
 
     const joinedB = waitForMessage(clientB);
-    send(clientB, { type: 'join', docId });
+    send(clientB, { type: 'join', docId, token });
     await joinedB;
 
     // Two independent local Yjs docs, standing in for each client's own editor state.
@@ -149,5 +132,27 @@ describe('SyncGateway (e2e)', () => {
 
     clientA.close();
     clientB.close();
+  });
+
+  it('rejects join with a missing or invalid token', async () => {
+    const docId = randomUUID();
+
+    const noToken = new WebSocket(url);
+    await waitForOpen(noToken);
+    const noTokenError = waitForMessage(noToken);
+    // @ts-expect-error -- deliberately sending a malformed message to prove the
+    // server rejects it, not just that the TS type requires a token.
+    send(noToken, { type: 'join', docId });
+    const noTokenResponse = await noTokenError;
+    expect(noTokenResponse.type).toBe('error');
+    noToken.close();
+
+    const badToken = new WebSocket(url);
+    await waitForOpen(badToken);
+    const badTokenError = waitForMessage(badToken);
+    send(badToken, { type: 'join', docId, token: 'not-a-real-jwt' });
+    const badTokenResponse = await badTokenError;
+    expect(badTokenResponse.type).toBe('error');
+    badToken.close();
   });
 });

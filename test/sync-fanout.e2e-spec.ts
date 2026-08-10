@@ -1,16 +1,20 @@
 import { randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import { Test, TestingModule } from '@nestjs/testing';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { fromBase64, toBase64 } from 'lib0/buffer';
 import * as Y from 'yjs';
 import WebSocket from 'ws';
 import { AppModule } from '../src/app.module';
-import { ClientMessage, ServerMessage } from '../src/sync/protocol';
+import { signTestToken } from './helpers/auth';
+import { textOf } from './helpers/yjs';
+import { send, waitForMessage, waitForOpen } from './helpers/ws';
 
 interface Instance {
   app: INestApplication;
   url: string;
+  module: TestingModule;
 }
 
 async function createInstance(): Promise<Instance> {
@@ -22,28 +26,7 @@ async function createInstance(): Promise<Instance> {
   app.useWebSocketAdapter(new WsAdapter(app));
   await app.listen(0);
   const baseUrl = (await app.getUrl()).replace(/^http/, 'ws');
-  return { app, url: `${baseUrl}/sync` };
-}
-
-function waitForOpen(socket: WebSocket): Promise<void> {
-  return new Promise((resolve) => socket.once('open', () => resolve()));
-}
-
-function waitForMessage(socket: WebSocket): Promise<ServerMessage> {
-  return new Promise((resolve) => {
-    socket.once('message', (data: Buffer) => {
-      resolve(JSON.parse(data.toString()) as ServerMessage);
-    });
-  });
-}
-
-function send(socket: WebSocket, message: ClientMessage): void {
-  socket.send(JSON.stringify(message));
-}
-
-function textOf(doc: Y.Doc): string {
-  // eslint-disable-next-line @typescript-eslint/no-base-to-string
-  return doc.getText('content').toString();
+  return { app, url: `${baseUrl}/sync`, module: moduleFixture };
 }
 
 /**
@@ -58,12 +41,16 @@ function textOf(doc: Y.Doc): string {
 describe('Sync fan-out across server instances (e2e)', () => {
   let instanceA: Instance;
   let instanceB: Instance;
+  let token: string;
 
   beforeEach(async () => {
     [instanceA, instanceB] = await Promise.all([
       createInstance(),
       createInstance(),
     ]);
+    // Both instances share the same JWT_SECRET (env var or the same dev fallback), so
+    // a token minted via either instance's JwtService verifies on both.
+    token = await signTestToken(instanceA.module.get(JwtService));
   });
 
   afterEach(async () => {
@@ -78,11 +65,11 @@ describe('Sync fan-out across server instances (e2e)', () => {
     await Promise.all([waitForOpen(clientOnA), waitForOpen(clientOnB)]);
 
     const joinedOnA = waitForMessage(clientOnA);
-    send(clientOnA, { type: 'join', docId });
+    send(clientOnA, { type: 'join', docId, token });
     await joinedOnA;
 
     const joinedOnB = waitForMessage(clientOnB);
-    send(clientOnB, { type: 'join', docId });
+    send(clientOnB, { type: 'join', docId, token });
     await joinedOnB;
 
     const localDoc = new Y.Doc();
@@ -117,13 +104,13 @@ describe('Sync fan-out across server instances (e2e)', () => {
     const firstClientOnB = new WebSocket(instanceB.url);
     await waitForOpen(firstClientOnB);
     const firstJoined = waitForMessage(firstClientOnB);
-    send(firstClientOnB, { type: 'join', docId });
+    send(firstClientOnB, { type: 'join', docId, token });
     await firstJoined;
 
     const clientOnA = new WebSocket(instanceA.url);
     await waitForOpen(clientOnA);
     const joinedOnA = waitForMessage(clientOnA);
-    send(clientOnA, { type: 'join', docId });
+    send(clientOnA, { type: 'join', docId, token });
     await joinedOnA;
 
     const seedDoc = new Y.Doc();
@@ -144,7 +131,7 @@ describe('Sync fan-out across server instances (e2e)', () => {
     const secondClientOnB = new WebSocket(instanceB.url);
     await waitForOpen(secondClientOnB);
     const secondJoined = waitForMessage(secondClientOnB);
-    send(secondClientOnB, { type: 'join', docId });
+    send(secondClientOnB, { type: 'join', docId, token });
     const joinedMessage = await secondJoined;
 
     expect(joinedMessage.type).toBe('joined');

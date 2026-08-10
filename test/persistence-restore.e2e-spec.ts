@@ -4,6 +4,7 @@ jest.unmock('pg');
 
 import { randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import { Test, TestingModule } from '@nestjs/testing';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { fromBase64, toBase64 } from 'lib0/buffer';
@@ -13,7 +14,9 @@ import WebSocket from 'ws';
 import { AppModule } from '../src/app.module';
 import { PG_POOL } from '../src/persistence/postgres.provider';
 import { SNAPSHOT_INTERVAL_MS } from '../src/persistence/snapshot-scheduler.service';
-import { ClientMessage, ServerMessage } from '../src/sync/protocol';
+import { signTestToken } from './helpers/auth';
+import { textOf } from './helpers/yjs';
+import { send, sleep, waitForMessage, waitForOpen } from './helpers/ws';
 
 const TEST_SNAPSHOT_INTERVAL_MS = 30;
 const DATABASE_URL =
@@ -72,31 +75,6 @@ async function seedDocRow(pool: Pool, docId: string): Promise<void> {
   );
 }
 
-function waitForOpen(socket: WebSocket): Promise<void> {
-  return new Promise((resolve) => socket.once('open', () => resolve()));
-}
-
-function waitForMessage(socket: WebSocket): Promise<ServerMessage> {
-  return new Promise((resolve) => {
-    socket.once('message', (data: Buffer) => {
-      resolve(JSON.parse(data.toString()) as ServerMessage);
-    });
-  });
-}
-
-function send(socket: WebSocket, message: ClientMessage): void {
-  socket.send(JSON.stringify(message));
-}
-
-function textOf(doc: Y.Doc): string {
-  // eslint-disable-next-line @typescript-eslint/no-base-to-string
-  return doc.getText('content').toString();
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 /**
  * Covers "loading a doc restores identical state from its latest snapshot" against a
  * REAL Postgres — pg-mem cannot prove this. Verified directly: pg-mem's `bytea`
@@ -135,11 +113,12 @@ describe('Persistence — restore from snapshot (e2e, real Postgres required)', 
     // the second instance sees has to come from Postgres, not a live process.
     const first = await createInstance();
     await seedDocRow(first.module.get(PG_POOL), docId);
+    const token = await signTestToken(first.module.get(JwtService));
 
     const firstClient = new WebSocket(first.url);
     await waitForOpen(firstClient);
     const firstJoined = waitForMessage(firstClient);
-    send(firstClient, { type: 'join', docId });
+    send(firstClient, { type: 'join', docId, token });
     await firstJoined;
 
     const seedDoc = new Y.Doc();
@@ -155,12 +134,13 @@ describe('Persistence — restore from snapshot (e2e, real Postgres required)', 
     await first.app.close();
 
     // Second, independent instance — separate DI container, separate
-    // DocRegistryService, sharing only the real Postgres.
+    // DocRegistryService, sharing only the real Postgres. Same JWT_SECRET (env var or
+    // dev fallback) as the first, so the token minted there still verifies here.
     const second = await createInstance();
     const secondClient = new WebSocket(second.url);
     await waitForOpen(secondClient);
     const joined = waitForMessage(secondClient);
-    send(secondClient, { type: 'join', docId });
+    send(secondClient, { type: 'join', docId, token });
     const joinedMessage = await joined;
 
     expect(joinedMessage.type).toBe('joined');

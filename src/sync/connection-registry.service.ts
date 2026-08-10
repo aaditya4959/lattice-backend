@@ -4,11 +4,13 @@ import type { WebSocket } from 'ws';
 /**
  * A connected client's raw `ws` socket, tagged with the bits of state the sync layer
  * needs to track per-connection: a server-issued id (used to skip echoing a client's
- * own update back to itself — see SyncGateway) and which doc it has joined, if any.
+ * own update back to itself — see SyncGateway), which doc it has joined, if any, and
+ * the authenticated user id from its `join` token (SCRUM-38) once validated.
  */
 export interface LatticeSocket extends WebSocket {
   clientId: string;
   docId?: string;
+  userId?: string;
 }
 
 /**

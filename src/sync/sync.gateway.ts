@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Logger } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import {
   OnGatewayConnection,
   OnGatewayDisconnect,
@@ -8,6 +9,7 @@ import {
 import { fromBase64, toBase64 } from 'lib0/buffer';
 import * as Y from 'yjs';
 import type { RawData } from 'ws';
+import { AuthTokenPayload } from '../auth/auth.service';
 import { SnapshotSchedulerService } from '../persistence/snapshot-scheduler.service';
 import {
   ConnectionRegistryService,
@@ -52,7 +54,9 @@ import { RedisFanoutService, UpdateEnvelope } from './redis-fanout.service';
  * (locally-originated updates come back through it too, via the instance's own
  * subscription), so scheduling there covers all cases with one call site.
  *
- * Ticket: SCRUM-30 (LAT-E1B)
+ * `join` also requires a valid JWT (SCRUM-38) — see handleJoin.
+ *
+ * Ticket: SCRUM-30 (LAT-E1B), SCRUM-38 (LAT-E2)
  */
 @WebSocketGateway({ path: '/sync' })
 export class SyncGateway
@@ -67,6 +71,7 @@ export class SyncGateway
     private readonly connections: ConnectionRegistryService,
     private readonly fanout: RedisFanoutService,
     private readonly snapshotScheduler: SnapshotSchedulerService,
+    private readonly jwt: JwtService,
   ) {}
 
   handleConnection(client: LatticeSocket): void {
@@ -114,8 +119,8 @@ export class SyncGateway
 
     switch (message.type) {
       case 'join':
-        this.handleJoin(client, message.docId).catch((err: unknown) =>
-          this.handleFailure(client, err),
+        this.handleJoin(client, message.docId, message.token).catch(
+          (err: unknown) => this.handleFailure(client, err),
         );
         return;
       case 'sync-request':
@@ -139,11 +144,34 @@ export class SyncGateway
     }
   }
 
-  /** Subscribes the client to a doc's broadcast group and hands back its full current state. */
+  /**
+   * Validates the join token (SCRUM-38), then subscribes the client to a doc's
+   * broadcast group and hands back its full current state. A bad token is rejected
+   * via an `error` message before any join side effect happens — no partial join.
+   *
+   * Only checks the token's authenticity/expiry, not whether the user has access to
+   * `docId` specifically — that's SCRUM-41's job (doc ownership/collaboration checks
+   * once DocsModule exists). This ticket's scope is "who is this," not "can they be
+   * here."
+   */
   private async handleJoin(
     client: LatticeSocket,
     docId: string,
+    token: string,
   ): Promise<void> {
+    let payload: AuthTokenPayload;
+    try {
+      payload = await this.jwt.verifyAsync<AuthTokenPayload>(token);
+    } catch {
+      this.send(client, {
+        type: 'error',
+        code: 'unauthorized',
+        message: 'Invalid or expired token',
+      });
+      return;
+    }
+
+    client.userId = payload.sub;
     client.docId = docId;
     const isFirstLocalClient = this.connections.add(docId, client);
     if (isFirstLocalClient) {

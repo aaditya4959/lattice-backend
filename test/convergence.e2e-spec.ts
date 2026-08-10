@@ -1,37 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import { Test, TestingModule } from '@nestjs/testing';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { fromBase64, toBase64 } from 'lib0/buffer';
 import * as Y from 'yjs';
 import WebSocket from 'ws';
 import { AppModule } from '../src/app.module';
-import { ClientMessage, ServerMessage } from '../src/sync/protocol';
-
-function waitForOpen(socket: WebSocket): Promise<void> {
-  return new Promise((resolve) => socket.once('open', () => resolve()));
-}
-
-function waitForMessage(socket: WebSocket): Promise<ServerMessage> {
-  return new Promise((resolve) => {
-    socket.once('message', (data: Buffer) => {
-      resolve(JSON.parse(data.toString()) as ServerMessage);
-    });
-  });
-}
-
-function send(socket: WebSocket, message: ClientMessage): void {
-  socket.send(JSON.stringify(message));
-}
-
-function textOf(doc: Y.Doc): string {
-  // eslint-disable-next-line @typescript-eslint/no-base-to-string
-  return doc.getText('content').toString();
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+import { signTestToken } from './helpers/auth';
+import { textOf } from './helpers/yjs';
+import { send, sleep, waitForMessage, waitForOpen } from './helpers/ws';
 
 /**
  * Proves SCRUM-33's acceptance criteria: two clients editing concurrently — neither
@@ -48,6 +26,7 @@ function sleep(ms: number): Promise<void> {
 describe('Concurrent-edit convergence (e2e)', () => {
   let app: INestApplication;
   let url: string;
+  let token: string;
 
   beforeEach(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -59,6 +38,7 @@ describe('Concurrent-edit convergence (e2e)', () => {
     await app.listen(0);
     const baseUrl = (await app.getUrl()).replace(/^http/, 'ws');
     url = `${baseUrl}/sync`;
+    token = await signTestToken(moduleFixture.get(JwtService));
   });
 
   afterEach(async () => {
@@ -73,11 +53,11 @@ describe('Concurrent-edit convergence (e2e)', () => {
     await Promise.all([waitForOpen(socketA), waitForOpen(socketB)]);
 
     const joinedA = waitForMessage(socketA);
-    send(socketA, { type: 'join', docId });
+    send(socketA, { type: 'join', docId, token });
     await joinedA;
 
     const joinedB = waitForMessage(socketB);
-    send(socketB, { type: 'join', docId });
+    send(socketB, { type: 'join', docId, token });
     await joinedB;
 
     // Both start from the same empty state and edit without any knowledge of each
@@ -101,7 +81,7 @@ describe('Concurrent-edit convergence (e2e)', () => {
     const socketC = new WebSocket(url);
     await waitForOpen(socketC);
     const joinedC = waitForMessage(socketC);
-    send(socketC, { type: 'join', docId });
+    send(socketC, { type: 'join', docId, token });
     const joinedMessageC = await joinedC;
     expect(joinedMessageC.type).toBe('joined');
     if (joinedMessageC.type !== 'joined') throw new Error('unreachable');

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import { Test, TestingModule } from '@nestjs/testing';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { toBase64 } from 'lib0/buffer';
@@ -10,32 +11,13 @@ import { AppModule } from '../src/app.module';
 import { PG_POOL } from '../src/persistence/postgres.provider';
 import { SNAPSHOT_INTERVAL_MS } from '../src/persistence/snapshot-scheduler.service';
 import { SnapshotService } from '../src/persistence/snapshot.service';
-import { ClientMessage, ServerMessage } from '../src/sync/protocol';
+import { signTestToken } from './helpers/auth';
+import { send, sleep, waitForMessage, waitForOpen } from './helpers/ws';
 
 // Short enough to keep the test fast, long enough to clearly separate "just sent" from
 // "the throttle fired" — real production tuning is an open question per DESIGN.md §8,
 // this is just what makes the test deterministic.
 const TEST_SNAPSHOT_INTERVAL_MS = 30;
-
-function waitForOpen(socket: WebSocket): Promise<void> {
-  return new Promise((resolve) => socket.once('open', () => resolve()));
-}
-
-function waitForMessage(socket: WebSocket): Promise<ServerMessage> {
-  return new Promise((resolve) => {
-    socket.once('message', (data: Buffer) => {
-      resolve(JSON.parse(data.toString()) as ServerMessage);
-    });
-  });
-}
-
-function send(socket: WebSocket, message: ClientMessage): void {
-  socket.send(JSON.stringify(message));
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /**
  * Inserts a user + doc row directly (no AuthModule/DocsModule yet — those are later
@@ -82,11 +64,12 @@ describe('Persistence — snapshot writes (e2e, mocked Postgres)', () => {
 
     const docId = randomUUID();
     await seedDoc(module.get(PG_POOL), docId);
+    const token = await signTestToken(module.get(JwtService));
 
     const client = new WebSocket(url);
     await waitForOpen(client);
     const joined = waitForMessage(client);
-    send(client, { type: 'join', docId });
+    send(client, { type: 'join', docId, token });
     await joined;
 
     const snapshots = module.get(SnapshotService);

@@ -13,7 +13,13 @@
 </head>
 <body>
   <h1>Lattice sync verification</h1>
-  <p>Open this same URL in another tab/browser to test real-time sync. Doc: <code id="doc-id"></code></p>
+  <p>Open this same URL (same <code>?doc=</code> and <code>?token=</code>) in another tab/browser to test real-time sync. Doc: <code id="doc-id"></code></p>
+  <p id="token-help" style="display: none">
+    No <code>?token=</code> in the URL. Get one via <code>curl</code>:<br />
+    <code>curl -X POST http://localhost:3000/auth/register -H "Content-Type: application/json" -d '{"email":"you@example.test","password":"whatever12345"}'</code><br />
+    <code>curl -X POST http://localhost:3000/auth/login -H "Content-Type: application/json" -d '{"email":"you@example.test","password":"whatever12345"}'</code><br />
+    then append <code>&amp;token=&lt;accessToken from login&gt;</code> to this page's URL.
+  </p>
   <div id="status">connecting…</div>
   <textarea id="editor" placeholder="Start typing…"></textarea>
 
@@ -35,6 +41,16 @@
       history.replaceState(null, '', `${location.pathname}?${params}`);
     }
     document.getElementById('doc-id').textContent = docId;
+
+    // SCRUM-38: join now requires a token. Can't mint one client-side (that needs the
+    // server's JWT secret) — the harness expects one obtained via a real register/login
+    // call and pasted into the URL, per the on-page instructions below.
+    const token = params.get('token');
+    if (!token) {
+      document.getElementById('token-help').style.display = 'block';
+      document.getElementById('editor').disabled = true;
+      throw new Error('No ?token= in URL — see on-page instructions.');
+    }
 
     const doc = new Y.Doc();
     const ytext = doc.getText('content');
@@ -104,7 +120,7 @@
       socket.addEventListener('open', () => {
         setStatus('connected', 'connected');
         reconnectDelay = 500;
-        send({ type: 'join', docId });
+        send({ type: 'join', docId, token });
       });
 
       socket.addEventListener('message', (event) => {
@@ -122,6 +138,9 @@
             break;
           case 'error':
             console.error('[lattice] server error', message.code, message.message);
+            if (message.code === 'unauthorized') {
+              setStatus(`unauthorized: ${message.message} — check ?token=`, 'disconnected');
+            }
             break;
         }
       });
