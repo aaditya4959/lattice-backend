@@ -114,16 +114,20 @@ export class SyncGateway
 
     switch (message.type) {
       case 'join':
-        this.handleJoin(client, message.docId).catch((err: unknown) => this.handleFailure(client, err));
-        return;
-      case 'sync-request':
-        this.handleSyncRequest(client, message.docId, message.stateVector).catch((err: unknown) =>
+        this.handleJoin(client, message.docId).catch((err: unknown) =>
           this.handleFailure(client, err),
         );
         return;
+      case 'sync-request':
+        this.handleSyncRequest(
+          client,
+          message.docId,
+          message.stateVector,
+        ).catch((err: unknown) => this.handleFailure(client, err));
+        return;
       case 'update':
-        this.handleUpdate(client, message.docId, message.update).catch((err: unknown) =>
-          this.handleFailure(client, err),
+        this.handleUpdate(client, message.docId, message.update).catch(
+          (err: unknown) => this.handleFailure(client, err),
         );
         return;
       default:
