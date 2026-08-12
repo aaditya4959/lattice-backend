@@ -10,6 +10,7 @@ import { fromBase64, toBase64 } from 'lib0/buffer';
 import * as Y from 'yjs';
 import type { RawData } from 'ws';
 import { AuthTokenPayload } from '../auth/auth.service';
+import { DocsService } from '../docs/docs.service';
 import { SnapshotSchedulerService } from '../persistence/snapshot-scheduler.service';
 import {
   ConnectionRegistryService,
@@ -67,7 +68,8 @@ export class SyncGateway
   private readonly logger = new Logger(SyncGateway.name);
 
   constructor(
-    private readonly docs: DocRegistryService,
+    private readonly docRegistry: DocRegistryService,
+    private readonly docsAccess: DocsService,
     private readonly connections: ConnectionRegistryService,
     private readonly fanout: RedisFanoutService,
     private readonly snapshotScheduler: SnapshotSchedulerService,
@@ -145,14 +147,15 @@ export class SyncGateway
   }
 
   /**
-   * Validates the join token (SCRUM-38), then subscribes the client to a doc's
-   * broadcast group and hands back its full current state. A bad token is rejected
-   * via an `error` message before any join side effect happens — no partial join.
-   *
-   * Only checks the token's authenticity/expiry, not whether the user has access to
-   * `docId` specifically — that's SCRUM-41's job (doc ownership/collaboration checks
-   * once DocsModule exists). This ticket's scope is "who is this," not "can they be
-   * here."
+   * Validates the join token (SCRUM-38), then confirms the authenticated user actually
+   * has access to `docId` — owner or collaborator, per `docs`/`doc_collaborators`
+   * (SCRUM-41) — before subscribing the client to the doc's broadcast group and handing
+   * back its full current state. Either check failing rejects via an `error` message
+   * before any join side effect happens — no partial join. This also means `docId` must
+   * already exist as a real `docs` row (created via `POST /docs`, SCRUM-39): a client
+   * can no longer implicitly create a doc just by joining an arbitrary id, which is the
+   * whole point of this ticket — SyncGateway used to accept any docId from any client
+   * with zero authorization.
    */
   private async handleJoin(
     client: LatticeSocket,
@@ -171,6 +174,19 @@ export class SyncGateway
       return;
     }
 
+    const hasAccess = await this.docsAccess.findAccessible(docId, payload.sub);
+    if (!hasAccess) {
+      // Same error for "doc doesn't exist" and "doc exists but you have no access" —
+      // deliberately, same reasoning as DocsController (SCRUM-40): distinguishing the
+      // two would let a client enumerate real doc IDs.
+      this.send(client, {
+        type: 'error',
+        code: 'forbidden',
+        message: 'You do not have access to this doc',
+      });
+      return;
+    }
+
     client.userId = payload.sub;
     client.docId = docId;
     const isFirstLocalClient = this.connections.add(docId, client);
@@ -180,7 +196,7 @@ export class SyncGateway
       );
     }
 
-    const doc = await this.docs.getOrCreate(docId);
+    const doc = await this.docRegistry.getOrCreate(docId);
     this.send(client, {
       type: 'joined',
       docId,
@@ -194,7 +210,7 @@ export class SyncGateway
     docId: string,
     stateVectorB64: string,
   ): Promise<void> {
-    const doc = await this.docs.getOrCreate(docId);
+    const doc = await this.docRegistry.getOrCreate(docId);
     const missing = Y.encodeStateAsUpdate(doc, fromBase64(stateVectorB64));
     this.send(client, {
       type: 'sync-response',
@@ -209,7 +225,7 @@ export class SyncGateway
     docId: string,
     updateB64: string,
   ): Promise<void> {
-    const doc = await this.docs.getOrCreate(docId);
+    const doc = await this.docRegistry.getOrCreate(docId);
     Y.applyUpdate(doc, fromBase64(updateB64));
     await this.fanout.publish(docId, {
       fromClientId: client.clientId,
@@ -222,7 +238,7 @@ export class SyncGateway
     docId: string,
     envelope: UpdateEnvelope,
   ): Promise<void> {
-    const doc = await this.docs.getOrCreate(docId);
+    const doc = await this.docRegistry.getOrCreate(docId);
     // Idempotent: a no-op if this instance already applied it locally in handleUpdate.
     Y.applyUpdate(doc, fromBase64(envelope.update));
     this.snapshotScheduler.schedule(docId, doc);

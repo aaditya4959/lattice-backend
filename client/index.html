@@ -20,6 +20,13 @@
     <code>curl -X POST http://localhost:3000/auth/login -H "Content-Type: application/json" -d '{"email":"you@example.test","password":"whatever12345"}'</code><br />
     then append <code>&amp;token=&lt;accessToken from login&gt;</code> to this page's URL.
   </p>
+  <p id="doc-help" style="display: none">
+    No <code>?doc=</code> in the URL, or <code>join</code> was rejected as
+    <code>forbidden</code>. Since SCRUM-41, joining requires a real doc you own or
+    collaborate on — create one first (using the token from above):<br />
+    <code>curl -X POST http://localhost:3000/docs -H "Authorization: Bearer &lt;accessToken&gt;" -H "Content-Type: application/json" -d '{"title":"Test doc"}'</code><br />
+    then append <code>&amp;doc=&lt;id from the response&gt;</code> to this page's URL.
+  </p>
   <div id="status">connecting…</div>
   <textarea id="editor" placeholder="Start typing…"></textarea>
 
@@ -34,13 +41,6 @@
     import { toBase64, fromBase64 } from 'https://esm.sh/lib0@0.2.117/buffer';
 
     const params = new URLSearchParams(location.search);
-    let docId = params.get('doc');
-    if (!docId) {
-      docId = crypto.randomUUID();
-      params.set('doc', docId);
-      history.replaceState(null, '', `${location.pathname}?${params}`);
-    }
-    document.getElementById('doc-id').textContent = docId;
 
     // SCRUM-38: join now requires a token. Can't mint one client-side (that needs the
     // server's JWT secret) — the harness expects one obtained via a real register/login
@@ -51,6 +51,17 @@
       document.getElementById('editor').disabled = true;
       throw new Error('No ?token= in URL — see on-page instructions.');
     }
+
+    // SCRUM-41: join now also requires a real doc the token's user owns or
+    // collaborates on — a client can no longer just make up a docId and have the
+    // server implicitly create it, so this harness can't auto-generate one either.
+    const docId = params.get('doc');
+    if (!docId) {
+      document.getElementById('doc-help').style.display = 'block';
+      document.getElementById('editor').disabled = true;
+      throw new Error('No ?doc= in URL — see on-page instructions.');
+    }
+    document.getElementById('doc-id').textContent = docId;
 
     const doc = new Y.Doc();
     const ytext = doc.getText('content');
@@ -140,6 +151,9 @@
             console.error('[lattice] server error', message.code, message.message);
             if (message.code === 'unauthorized') {
               setStatus(`unauthorized: ${message.message} — check ?token=`, 'disconnected');
+            } else if (message.code === 'forbidden') {
+              document.getElementById('doc-help').style.display = 'block';
+              setStatus(`forbidden: ${message.message} — check ?doc=`, 'disconnected');
             }
             break;
         }

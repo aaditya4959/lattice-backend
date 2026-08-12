@@ -59,11 +59,12 @@ async function createInstance(): Promise<{
 }
 
 /**
- * Inserts a user + doc row directly (no AuthModule/DocsModule yet — those are later
- * LAT-E2 tickets) so `docId` satisfies doc_snapshots' FK, added in this same ticket
- * (SCRUM-36).
+ * Inserts a user + doc row directly rather than going through AuthModule/DocsModule —
+ * this file is testing snapshot restore, not those modules. Returns the owner's id so
+ * the caller can mint a `join` token that SCRUM-41's access check (owner or
+ * collaborator) will actually accept for this doc.
  */
-async function seedDocRow(pool: Pool, docId: string): Promise<void> {
+async function seedDocRow(pool: Pool, docId: string): Promise<string> {
   const ownerId = randomUUID();
   await pool.query(
     'INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)',
@@ -73,6 +74,7 @@ async function seedDocRow(pool: Pool, docId: string): Promise<void> {
     'INSERT INTO docs (id, owner_id, title) VALUES ($1, $2, $3)',
     [docId, ownerId, 'Test doc'],
   );
+  return ownerId;
 }
 
 /**
@@ -112,8 +114,12 @@ describe('Persistence — restore from snapshot (e2e, real Postgres required)', 
     // its in-memory DocRegistryService is gone once app.close() resolves. Anything
     // the second instance sees has to come from Postgres, not a live process.
     const first = await createInstance();
-    await seedDocRow(first.module.get(PG_POOL), docId);
-    const token = await signTestToken(first.module.get(JwtService));
+    const ownerId = await seedDocRow(first.module.get(PG_POOL), docId);
+    const token = await signTestToken(
+      first.module.get(JwtService),
+      undefined,
+      ownerId,
+    );
 
     const firstClient = new WebSocket(first.url);
     await waitForOpen(firstClient);

@@ -134,10 +134,17 @@ built: there is currently no `docs`/`users` table and `SyncGateway` accepts any
   now self-healing (`DROP CONSTRAINT IF EXISTS` + `ADD CONSTRAINT` on every boot,
   see `ensureForeignKey()`) rather than create-once-and-skip, so schema.ts constraint
   changes propagate to existing databases automatically.
-- ⏳ `SCRUM-41`: Authorize `SyncGateway` joins against real doc ownership/collaboration
-  — the actual fix for the zero-authorization gap above (currently any client can
-  `join` any `docId` once their token is valid, regardless of whether they own or
-  collaborate on that doc)
+- ✅ `SCRUM-41`: `SyncGateway.handleJoin` now checks `DocsService.findAccessible()`
+  after token verification — a valid token no longer implies access to an arbitrary
+  `docId`. No access (or a `docId` that isn't a real `docs` row at all — same response
+  either way, no enumeration) rejects with `{type:'error', code:'forbidden'}`, a new
+  code distinct from `unauthorized` (bad/missing token). This closes the original
+  epic's zero-authorization gap: a client can no longer implicitly create/join any doc
+  it invents — `docId` must already exist via `POST /docs`. Updated
+  `sync`/`sync-fanout`/`reconnect`/`convergence`/`persistence`/`persistence-restore`
+  e2e specs to register a real user and own (or get invited to) a real doc before
+  joining, rather than a bare signed token; `client/index.html` now requires `?doc=`
+  the same way it already required `?token=`.
 - ⏳ `SCRUM-42`: Integration test: full register → login → create doc → join → edit →
   invite flow
 - ⏳ `SCRUM-43`: ADR: auth strategy decisions

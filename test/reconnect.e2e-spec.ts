@@ -1,13 +1,11 @@
-import { randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
 import { Test, TestingModule } from '@nestjs/testing';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { fromBase64, toBase64 } from 'lib0/buffer';
 import * as Y from 'yjs';
 import WebSocket from 'ws';
 import { AppModule } from '../src/app.module';
-import { signTestToken } from './helpers/auth';
+import { createTestDoc, registerTestUser } from './helpers/docs';
 import { textOf } from './helpers/yjs';
 import { send, sleep, waitForMessage, waitForOpen } from './helpers/ws';
 
@@ -26,6 +24,7 @@ describe('Reconnect / resync protocol (e2e)', () => {
   let app: INestApplication;
   let url: string;
   let token: string;
+  let userId: string;
 
   beforeEach(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -37,7 +36,7 @@ describe('Reconnect / resync protocol (e2e)', () => {
     await app.listen(0);
     const baseUrl = (await app.getUrl()).replace(/^http/, 'ws');
     url = `${baseUrl}/sync`;
-    token = await signTestToken(moduleFixture.get(JwtService));
+    ({ userId, token } = await registerTestUser(app));
   });
 
   afterEach(async () => {
@@ -45,7 +44,7 @@ describe('Reconnect / resync protocol (e2e)', () => {
   });
 
   it('catches a reconnecting client up on concurrent edits via a small diff, not a full resync', async () => {
-    const docId = randomUUID();
+    const docId = await createTestDoc(app, userId);
 
     // Client A joins and builds up a substantial amount of shared history.
     const socketA = new WebSocket(url);

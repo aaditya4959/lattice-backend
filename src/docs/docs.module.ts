@@ -9,5 +9,8 @@ import { DocsService } from './docs.service';
   imports: [PersistenceModule, AuthModule],
   controllers: [DocsController],
   providers: [DocsService],
+  // DocsService exported so SyncModule (SCRUM-41) can authorize `join` against real
+  // doc ownership/collaboration without going through HTTP.
+  exports: [DocsService],
 })
 export class DocsModule {}

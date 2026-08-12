@@ -1,13 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
 import { Test, TestingModule } from '@nestjs/testing';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { fromBase64, toBase64 } from 'lib0/buffer';
 import * as Y from 'yjs';
 import WebSocket from 'ws';
 import { AppModule } from '../src/app.module';
-import { signTestToken } from './helpers/auth';
+import { createTestDoc, registerTestUser } from './helpers/docs';
 import { textOf } from './helpers/yjs';
 import { send, sleep, waitForMessage, waitForOpen } from './helpers/ws';
 
@@ -15,6 +14,7 @@ describe('SyncGateway (e2e)', () => {
   let app: INestApplication;
   let url: string;
   let token: string;
+  let userId: string;
 
   beforeEach(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -26,7 +26,7 @@ describe('SyncGateway (e2e)', () => {
     await app.listen(0);
     const baseUrl = (await app.getUrl()).replace(/^http/, 'ws');
     url = `${baseUrl}/sync`;
-    token = await signTestToken(moduleFixture.get(JwtService));
+    ({ userId, token } = await registerTestUser(app));
   });
 
   afterEach(async () => {
@@ -34,7 +34,7 @@ describe('SyncGateway (e2e)', () => {
   });
 
   it('answers a sync-request with exactly the update the requester is missing', async () => {
-    const docId = randomUUID();
+    const docId = await createTestDoc(app, userId);
 
     const writer = new WebSocket(url);
     await waitForOpen(writer);
@@ -82,7 +82,7 @@ describe('SyncGateway (e2e)', () => {
   });
 
   it("broadcasts one client's update to the other, and both converge", async () => {
-    const docId = randomUUID();
+    const docId = await createTestDoc(app, userId);
 
     const clientA = new WebSocket(url);
     const clientB = new WebSocket(url);
@@ -154,5 +154,38 @@ describe('SyncGateway (e2e)', () => {
     const badTokenResponse = await badTokenError;
     expect(badTokenResponse.type).toBe('error');
     badToken.close();
+  });
+
+  it('rejects join for a doc the authenticated user has no access to', async () => {
+    // A second, unrelated user owns this doc — `token` (this describe's registered
+    // user) is neither its owner nor a collaborator.
+    const stranger = await registerTestUser(app);
+    const docId = await createTestDoc(app, stranger.userId);
+
+    const socket = new WebSocket(url);
+    await waitForOpen(socket);
+    const errorMessage = waitForMessage(socket);
+    send(socket, { type: 'join', docId, token });
+    const response = await errorMessage;
+
+    expect(response.type).toBe('error');
+    if (response.type !== 'error') throw new Error('unreachable');
+    expect(response.code).toBe('forbidden');
+
+    socket.close();
+  });
+
+  it('rejects join for a docId that does not exist at all — same error as no access', async () => {
+    const socket = new WebSocket(url);
+    await waitForOpen(socket);
+    const errorMessage = waitForMessage(socket);
+    send(socket, { type: 'join', docId: randomUUID(), token });
+    const response = await errorMessage;
+
+    expect(response.type).toBe('error');
+    if (response.type !== 'error') throw new Error('unreachable');
+    expect(response.code).toBe('forbidden');
+
+    socket.close();
   });
 });

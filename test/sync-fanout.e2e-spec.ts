@@ -1,13 +1,11 @@
-import { randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
 import { Test, TestingModule } from '@nestjs/testing';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { fromBase64, toBase64 } from 'lib0/buffer';
 import * as Y from 'yjs';
 import WebSocket from 'ws';
 import { AppModule } from '../src/app.module';
-import { signTestToken } from './helpers/auth';
+import { createTestDoc, registerTestUser } from './helpers/docs';
 import { textOf } from './helpers/yjs';
 import { send, waitForMessage, waitForOpen } from './helpers/ws';
 
@@ -42,6 +40,7 @@ describe('Sync fan-out across server instances (e2e)', () => {
   let instanceA: Instance;
   let instanceB: Instance;
   let token: string;
+  let userId: string;
 
   beforeEach(async () => {
     [instanceA, instanceB] = await Promise.all([
@@ -49,8 +48,12 @@ describe('Sync fan-out across server instances (e2e)', () => {
       createInstance(),
     ]);
     // Both instances share the same JWT_SECRET (env var or the same dev fallback), so
-    // a token minted via either instance's JwtService verifies on both.
-    token = await signTestToken(instanceA.module.get(JwtService));
+    // a token minted via either instance's JwtService verifies on both. They also
+    // share the same mocked Postgres within this test file (test/jest.setup.ts's
+    // jest.mock('pg', ...) factory runs once per file, not once per Pool instance), so
+    // a doc created via instanceA's DocsService is visible to instanceB's too — same
+    // as two real server instances pointed at the same real Postgres.
+    ({ userId, token } = await registerTestUser(instanceA.app));
   });
 
   afterEach(async () => {
@@ -58,7 +61,7 @@ describe('Sync fan-out across server instances (e2e)', () => {
   });
 
   it('delivers an update applied on instance A to a client connected to instance B, via Redis', async () => {
-    const docId = randomUUID();
+    const docId = await createTestDoc(instanceA.app, userId);
 
     const clientOnA = new WebSocket(instanceA.url);
     const clientOnB = new WebSocket(instanceB.url);
@@ -95,7 +98,7 @@ describe('Sync fan-out across server instances (e2e)', () => {
   });
 
   it("updates instance B's own doc registry, not just the one already-open socket", async () => {
-    const docId = randomUUID();
+    const docId = await createTestDoc(instanceA.app, userId);
 
     // B needs a local client BEFORE A publishes — B only subscribes to a doc's Redis
     // channel once it has at least one local client on it (DESIGN.md §6), and Redis
