@@ -118,17 +118,29 @@ Original `LAT-E2` scope ("real-time networking layer") is done, absorbed into
 `LAT-E1B` — this slot now covers what DESIGN.md §4.1/§5 always specified but was never
 built: there is currently no `docs`/`users` table and `SyncGateway` accepts any
 `docId` from any client with zero authorization.
-- ⏳ `users`/`docs`/`doc_collaborators` schema bootstrap; add the FK from
+- ✅ `SCRUM-36`: `users`/`docs`/`doc_collaborators` schema bootstrap; FK from
   `doc_snapshots.doc_id` → `docs.id` (missing since SCRUM-30)
-- ⏳ `POST /auth/register` / `POST /auth/login` — password hashing + JWT
-- ⏳ Auth guard for REST routes + token validation on `join` (DESIGN.md's `join.token`
-  field, deferred since SCRUM-28 — no AuthModule existed yet)
-- ⏳ `DocsModule`: create/list docs
-- ⏳ `DocsModule`: doc metadata, delete, invite collaborator
-- ⏳ Authorize `SyncGateway` joins against real doc ownership/collaboration — the
-  actual fix for the zero-authorization gap above
-- ⏳ Integration test: full register → login → create doc → join → edit → invite flow
-- ⏳ ADR: auth strategy decisions
+- ✅ `SCRUM-37`: `POST /auth/register` / `POST /auth/login` — bcrypt password hashing +
+  JWT (`AuthModule`, hand-rolled, no Passport — see `src/auth/`)
+- ✅ `SCRUM-38`: `JwtAuthGuard` for REST routes + token validation on `join`
+  (DESIGN.md's `join.token` field, deferred since SCRUM-28 — no AuthModule existed yet)
+- ✅ `SCRUM-39`: `DocsModule`: `POST /docs` (create), `GET /docs` (list, owner +
+  collaborator access)
+- ✅ `SCRUM-40`: `DocsModule`: `GET /docs/:id` (metadata + `latestSnapshotAt`),
+  `DELETE /docs/:id` (owner-only), `POST /docs/:id/invite` (owner-only, by email).
+  Found and fixed a real bug along the way: `doc_snapshots`/`doc_collaborators` had no
+  `ON DELETE CASCADE` on their `doc_id` FK, so deleting any doc that actually had
+  snapshots or collaborators would have failed. `PersistenceModule`'s FK bootstrap is
+  now self-healing (`DROP CONSTRAINT IF EXISTS` + `ADD CONSTRAINT` on every boot,
+  see `ensureForeignKey()`) rather than create-once-and-skip, so schema.ts constraint
+  changes propagate to existing databases automatically.
+- ⏳ `SCRUM-41`: Authorize `SyncGateway` joins against real doc ownership/collaboration
+  — the actual fix for the zero-authorization gap above (currently any client can
+  `join` any `docId` once their token is valid, regardless of whether they own or
+  collaborate on that doc)
+- ⏳ `SCRUM-42`: Integration test: full register → login → create doc → join → edit →
+  invite flow
+- ⏳ `SCRUM-43`: ADR: auth strategy decisions
 
 `LAT-E3` / `LAT-E4` (horizontal scaling, persistence & offline sync) — same as before,
 already absorbed into `LAT-E1B`'s Redis fan-out and Postgres snapshotting. No separate

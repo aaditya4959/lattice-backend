@@ -31,13 +31,29 @@ export const DOCS_SCHEMA_SQL = `
   );
 `;
 
+/**
+ * doc_id's FK to docs(id) is added separately below (DOC_COLLABORATORS_DOC_ID_FK_SQL),
+ * not inlined here — same reason as doc_snapshots: it needs to carry ON DELETE CASCADE
+ * (SCRUM-40) and a drop-and-recreate pattern that survives a schema.ts CASCADE change
+ * only works from an ALTER TABLE, not a CREATE TABLE IF NOT EXISTS that no-ops once the
+ * table already exists.
+ */
 export const DOC_COLLABORATORS_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS doc_collaborators (
-    doc_id  uuid NOT NULL REFERENCES docs(id),
+    doc_id  uuid NOT NULL,
     user_id uuid NOT NULL REFERENCES users(id),
     role    text NOT NULL,
     PRIMARY KEY (doc_id, user_id)
   );
+`;
+
+/**
+ * No cascade on user_id — there's no delete-user feature yet, so that behavior doesn't
+ * need deciding now.
+ */
+export const DOC_COLLABORATORS_DOC_ID_FK_SQL = `
+  ALTER TABLE doc_collaborators
+    ADD CONSTRAINT doc_collaborators_doc_id_fkey FOREIGN KEY (doc_id) REFERENCES docs(id) ON DELETE CASCADE;
 `;
 
 /**
@@ -58,7 +74,11 @@ export const DOC_SNAPSHOTS_SCHEMA_SQL = `
     ON doc_snapshots (doc_id, created_at DESC);
 `;
 
+/**
+ * ON DELETE CASCADE: SCRUM-40's DELETE /docs/:id needs deleting a doc to not be blocked
+ * by its own snapshot rows.
+ */
 export const DOC_SNAPSHOTS_DOC_ID_FK_SQL = `
   ALTER TABLE doc_snapshots
-    ADD CONSTRAINT doc_snapshots_doc_id_fkey FOREIGN KEY (doc_id) REFERENCES docs(id);
+    ADD CONSTRAINT doc_snapshots_doc_id_fkey FOREIGN KEY (doc_id) REFERENCES docs(id) ON DELETE CASCADE;
 `;

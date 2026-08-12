@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
+import { isUniqueViolation } from '../persistence/pg-errors';
 import { UsersService } from './users.service';
 
 const BCRYPT_SALT_ROUNDS = 10;
@@ -12,15 +13,6 @@ const BCRYPT_SALT_ROUNDS = 10;
 export interface AuthTokenPayload {
   sub: string;
   email: string;
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    'code' in err &&
-    err.code === '23505'
-  );
 }
 
 /**
