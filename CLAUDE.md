@@ -145,8 +145,11 @@ built: there is currently no `docs`/`users` table and `SyncGateway` accepts any
   e2e specs to register a real user and own (or get invited to) a real doc before
   joining, rather than a bare signed token; `client/index.html` now requires `?doc=`
   the same way it already required `?token=`.
-- ⏳ `SCRUM-42`: Integration test: full register → login → create doc → join → edit →
-  invite flow
+- ✅ `SCRUM-42`: `test/full-lifecycle.e2e-spec.ts` — one continuous scenario (not
+  several independent `it()`s, since each step depends causally on the last) proving
+  register → login → create doc → join via WS with a token → edit → list docs →
+  invite a collaborator → the collaborator can also list and join, all compose
+  correctly together rather than just passing in isolation.
 - ⏳ `SCRUM-43`: ADR: auth strategy decisions
 
 `LAT-E3` / `LAT-E4` (horizontal scaling, persistence & offline sync) — same as before,
