@@ -150,7 +150,12 @@ built: there is currently no `docs`/`users` table and `SyncGateway` accepts any
   register → login → create doc → join via WS with a token → edit → list docs →
   invite a collaborator → the collaborator can also list and join, all compose
   correctly together rather than just passing in isolation.
-- ⏳ `SCRUM-43`: ADR: auth strategy decisions
+- ✅ `SCRUM-43`: `docs/adr/0006-auth-strategy.md` — JWT-vs-sessions, bcrypt-vs-Argon2id,
+  and why `join`'s token lives in an application-level message rather than a header or
+  query param (browsers can't set custom headers on a WS handshake; query params leak
+  into logs).
+
+`LAT-E2` is now complete — all nine tickets (SCRUM-36 through SCRUM-43) done.
 
 `LAT-E3` / `LAT-E4` (horizontal scaling, persistence & offline sync) — same as before,
 already absorbed into `LAT-E1B`'s Redis fan-out and Postgres snapshotting. No separate
