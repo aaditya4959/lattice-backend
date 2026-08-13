@@ -1,9 +1,5 @@
 import { Injectable } from '@nestjs/common';
-
-export interface PresenceUser {
-  userId: string;
-  email: string;
-}
+import { PresenceUser } from './protocol';
 
 interface PresenceEntry extends PresenceUser {
   clientIds: Set<string>;

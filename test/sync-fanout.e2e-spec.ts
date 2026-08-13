@@ -74,6 +74,7 @@ describe('Sync fan-out across server instances (e2e)', () => {
     const joinedOnB = waitForMessage(clientOnB);
     send(clientOnB, { type: 'join', docId, token });
     await joinedOnB;
+    await waitForMessage(clientOnB); // presence snapshot, sent right after joined
 
     const localDoc = new Y.Doc();
     localDoc.getText('content').insert(0, 'from instance A');
@@ -109,6 +110,7 @@ describe('Sync fan-out across server instances (e2e)', () => {
     const firstJoined = waitForMessage(firstClientOnB);
     send(firstClientOnB, { type: 'join', docId, token });
     await firstJoined;
+    await waitForMessage(firstClientOnB); // presence snapshot, sent right after joined
 
     const clientOnA = new WebSocket(instanceA.url);
     await waitForOpen(clientOnA);

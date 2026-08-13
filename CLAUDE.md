@@ -177,8 +177,21 @@ ticket yet"). Jira epic `SCRUM-44`.
   so a caller (SCRUM-46) can tell "a real join/leave" from "just another tab."
   Registered as a `SyncModule` provider now but not yet injected anywhere — SCRUM-46
   wires it into `SyncGateway`.
-- ⏳ `SCRUM-46`: Extend `protocol.ts` + `SyncGateway` — `cursor`/`presence` message
-  types, presence snapshot on join, broadcast on join/leave, throttled cursor updates
+- ✅ `SCRUM-46`: Extended `protocol.ts` with `cursor` (client→server, raw text
+  position — not CRDT-anchored, see ADR-0007 for that scope boundary) and `presence`
+  (server→client roster). `SyncGateway.handleJoin` sends the joining client its own
+  presence snapshot, then broadcasts to other local clients only if this was the
+  user's genuinely first connection to the doc (`PresenceRegistryService.add`'s return
+  value) — a second tab doesn't spam a redundant roster update. `handleDisconnect`
+  mirrors this on the way out. Cursor updates go through a new
+  `CursorThrottleService` (leading + trailing throttle, `CURSOR_THROTTLE_MS`,
+  default 100ms — same "needs empirical tuning" caveat as `SNAPSHOT_INTERVAL_MS`) so
+  rapid mouse/keyboard movement doesn't flood every other client one-for-one. All
+  local-instance-only for now — SCRUM-47 adds cross-instance fan-out. Also fixed a
+  latent test-infra bug this surfaced: `test/helpers/ws.ts`'s `waitForMessage` used a
+  fresh `.once('message')` per call, which silently drops messages arriving in the
+  same tick as a prior one (exactly what happens now that `joined` and `presence` are
+  sent back-to-back) — replaced with a proper per-socket FIFO queue.
 - ⏳ `SCRUM-47`: Redis fan-out for presence/cursor updates across server instances —
   reuses the existing always-through-Redis pattern (ADR-0005 §2), not a special-cased
   local-only path

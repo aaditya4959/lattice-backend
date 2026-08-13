@@ -95,6 +95,7 @@ describe('Reconnect / resync protocol (e2e)', () => {
     const rejoined = waitForMessage(socketA2);
     send(socketA2, { type: 'join', docId, token });
     await rejoined;
+    await waitForMessage(socketA2); // presence snapshot, sent right after joined
 
     const syncResponse = waitForMessage(socketA2);
     send(socketA2, {

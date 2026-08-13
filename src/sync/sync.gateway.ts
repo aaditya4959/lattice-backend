@@ -16,7 +16,9 @@ import {
   ConnectionRegistryService,
   LatticeSocket,
 } from './connection-registry.service';
+import { CursorThrottleService } from './cursor-throttle.service';
 import { DocRegistryService } from './doc-registry.service';
+import { PresenceRegistryService } from './presence-registry.service';
 import { ClientMessage, ServerMessage } from './protocol';
 import { RedisFanoutService, UpdateEnvelope } from './redis-fanout.service';
 
@@ -57,7 +59,15 @@ import { RedisFanoutService, UpdateEnvelope } from './redis-fanout.service';
  *
  * `join` also requires a valid JWT (SCRUM-38) — see handleJoin.
  *
- * Ticket: SCRUM-30 (LAT-E1B), SCRUM-38 (LAT-E2)
+ * Presence (SCRUM-46) piggybacks on `ConnectionRegistryService`'s existing local
+ * socket set for delivery (`broadcastToOthers` iterates the same per-doc socket set
+ * `handleRemoteUpdate` already uses) but tracks *users*, not sockets, in a separate
+ * `PresenceRegistryService` — a user with two tabs open is one presence entry. Cursor
+ * broadcasts are throttled per connection via `CursorThrottleService` since position
+ * changes far more often than document edits. Both are local-instance-only for now;
+ * cross-instance presence fan-out over Redis is SCRUM-47, not built yet.
+ *
+ * Ticket: SCRUM-30 (LAT-E1B), SCRUM-38 (LAT-E2), SCRUM-46 (LAT-E5)
  */
 @WebSocketGateway({ path: '/sync' })
 export class SyncGateway
@@ -71,6 +81,8 @@ export class SyncGateway
     private readonly docRegistry: DocRegistryService,
     private readonly docsAccess: DocsService,
     private readonly connections: ConnectionRegistryService,
+    private readonly presence: PresenceRegistryService,
+    private readonly cursorThrottle: CursorThrottleService,
     private readonly fanout: RedisFanoutService,
     private readonly snapshotScheduler: SnapshotSchedulerService,
     private readonly jwt: JwtService,
@@ -85,11 +97,21 @@ export class SyncGateway
 
   handleDisconnect(client: LatticeSocket): void {
     if (!client.docId) return;
-    const isEmpty = this.connections.remove(client.docId, client);
+    const docId = client.docId;
+    const isEmpty = this.connections.remove(docId, client);
     if (isEmpty) {
       this.fanout
-        .unsubscribe(client.docId)
+        .unsubscribe(docId)
         .catch((err: unknown) => this.logger.error(err));
+    }
+
+    if (client.userId) {
+      const wasLastConnection = this.presence.remove(
+        docId,
+        client.userId,
+        client.clientId,
+      );
+      if (wasLastConnection) this.broadcastPresence(docId, client);
     }
   }
 
@@ -136,6 +158,9 @@ export class SyncGateway
         this.handleUpdate(client, message.docId, message.update).catch(
           (err: unknown) => this.handleFailure(client, err),
         );
+        return;
+      case 'cursor':
+        this.handleCursor(client, message.docId, message.position);
         return;
       default:
         this.send(client, {
@@ -202,6 +227,73 @@ export class SyncGateway
       docId,
       initialState: toBase64(Y.encodeStateAsUpdate(doc)),
     });
+
+    // Presence, not the doc itself: the joining client always gets the current
+    // roster (below), but OTHER clients only need telling when the roster actually
+    // changed — i.e. this was the user's first connection to the doc, not just their
+    // second open tab on one they're already present in.
+    const isNewPresence = this.presence.add(
+      docId,
+      payload.sub,
+      payload.email,
+      client.clientId,
+    );
+    this.send(client, {
+      type: 'presence',
+      docId,
+      users: this.presence.list(docId),
+    });
+    if (isNewPresence) this.broadcastPresence(docId, client);
+  }
+
+  /**
+   * Reports a client's own cursor position to every other client on the same doc,
+   * throttled per connection (CursorThrottleService, SCRUM-46) since position changes
+   * far more often than document content. Silently ignored if the client hasn't
+   * completed a `join` for this exact `docId` — there's no meaningful "whose cursor is
+   * this" without an authenticated, joined identity, and this is routine enough
+   * (a stray message before `join` finishes, or for a doc the client isn't on) that an
+   * `error` response would be noise rather than signal.
+   */
+  private handleCursor(
+    client: LatticeSocket,
+    docId: string,
+    position: number,
+  ): void {
+    if (!client.userId || client.docId !== docId) return;
+    const userId = client.userId;
+    this.cursorThrottle.submit(
+      client.clientId,
+      { userId, position },
+      (update) => {
+        this.broadcastToOthers(docId, client, {
+          type: 'cursor',
+          docId,
+          userId: update.userId,
+          position: update.position,
+        });
+      },
+    );
+  }
+
+  /** Sends `docId`'s current presence roster to every OTHER local client on that doc. */
+  private broadcastPresence(docId: string, exceptClient: LatticeSocket): void {
+    this.broadcastToOthers(docId, exceptClient, {
+      type: 'presence',
+      docId,
+      users: this.presence.list(docId),
+    });
+  }
+
+  private broadcastToOthers(
+    docId: string,
+    exceptClient: LatticeSocket,
+    message: ServerMessage,
+  ): void {
+    for (const socket of this.connections.getSockets(docId)) {
+      if (socket === exceptClient) continue;
+      this.send(socket, message);
+    }
   }
 
   /** Computes and returns exactly what the client is missing, per its state vector. */

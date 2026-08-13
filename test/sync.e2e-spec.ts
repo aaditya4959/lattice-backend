@@ -6,9 +6,32 @@ import { fromBase64, toBase64 } from 'lib0/buffer';
 import * as Y from 'yjs';
 import WebSocket from 'ws';
 import { AppModule } from '../src/app.module';
+import { DocsService } from '../src/docs/docs.service';
+import { ServerMessage } from '../src/sync/protocol';
 import { createTestDoc, registerTestUser } from './helpers/docs';
 import { textOf } from './helpers/yjs';
-import { send, sleep, waitForMessage, waitForOpen } from './helpers/ws';
+import {
+  expectNoMessage,
+  send,
+  sleep,
+  waitForMessage,
+  waitForOpen,
+} from './helpers/ws';
+
+/**
+ * Registers a second user and invites them as a collaborator on `docId` — the
+ * presence/cursor tests below need two genuinely distinct authenticated users on the
+ * same doc, not just two sockets for the same user.
+ */
+async function inviteCollaborator(
+  app: INestApplication,
+  docId: string,
+): Promise<{ userId: string; token: string }> {
+  const email = `${Date.now()}-${randomUUID()}@example.test`;
+  const collaborator = await registerTestUser(app, email);
+  await app.get(DocsService).inviteCollaborator(docId, email);
+  return collaborator;
+}
 
 describe('SyncGateway (e2e)', () => {
   let app: INestApplication;
@@ -57,6 +80,7 @@ describe('SyncGateway (e2e)', () => {
     const readerJoined = waitForMessage(reader);
     send(reader, { type: 'join', docId, token });
     await readerJoined;
+    await waitForMessage(reader); // presence snapshot, sent right after joined
 
     // A fresh reader's state vector is empty, so sync-response should hand back the
     // server's entire current state — exactly the "state vector exchange" mechanism
@@ -91,10 +115,12 @@ describe('SyncGateway (e2e)', () => {
     const joinedA = waitForMessage(clientA);
     send(clientA, { type: 'join', docId, token });
     await joinedA;
+    await waitForMessage(clientA); // presence snapshot, sent right after joined
 
     const joinedB = waitForMessage(clientB);
     send(clientB, { type: 'join', docId, token });
     await joinedB;
+    await waitForMessage(clientB); // presence snapshot, sent right after joined
 
     // Two independent local Yjs docs, standing in for each client's own editor state.
     const docA = new Y.Doc();
@@ -187,5 +213,197 @@ describe('SyncGateway (e2e)', () => {
     expect(response.code).toBe('forbidden');
 
     socket.close();
+  });
+
+  describe('presence', () => {
+    it('sends the joining client a presence snapshot that includes themselves', async () => {
+      const docId = await createTestDoc(app, userId);
+
+      const socket = new WebSocket(url);
+      await waitForOpen(socket);
+      send(socket, { type: 'join', docId, token });
+      await waitForMessage(socket); // joined
+
+      const presence = await waitForMessage(socket);
+      expect(presence.type).toBe('presence');
+      if (presence.type !== 'presence') throw new Error('unreachable');
+      expect(presence.users.map((u) => u.userId)).toEqual([userId]);
+
+      socket.close();
+    });
+
+    it('notifies an already-connected client when a second, different user joins', async () => {
+      const docId = await createTestDoc(app, userId);
+      const bob = await inviteCollaborator(app, docId);
+
+      const aliceSocket = new WebSocket(url);
+      await waitForOpen(aliceSocket);
+      send(aliceSocket, { type: 'join', docId, token });
+      await waitForMessage(aliceSocket); // joined
+      await waitForMessage(aliceSocket); // presence: just alice
+
+      const aliceNotifiedOfBob = waitForMessage(aliceSocket);
+
+      const bobSocket = new WebSocket(url);
+      await waitForOpen(bobSocket);
+      send(bobSocket, { type: 'join', docId, token: bob.token });
+      await waitForMessage(bobSocket); // joined
+      const bobPresence = await waitForMessage(bobSocket);
+      expect(bobPresence.type).toBe('presence');
+      if (bobPresence.type !== 'presence') throw new Error('unreachable');
+      expect(bobPresence.users.map((u) => u.userId).sort()).toEqual(
+        [userId, bob.userId].sort(),
+      );
+
+      const aliceUpdate = await aliceNotifiedOfBob;
+      expect(aliceUpdate.type).toBe('presence');
+      if (aliceUpdate.type !== 'presence') throw new Error('unreachable');
+      expect(aliceUpdate.users.map((u) => u.userId).sort()).toEqual(
+        [userId, bob.userId].sort(),
+      );
+
+      aliceSocket.close();
+      bobSocket.close();
+    });
+
+    it("does not notify other clients when a user opens a SECOND tab on a doc they're already on", async () => {
+      const docId = await createTestDoc(app, userId);
+      const bob = await inviteCollaborator(app, docId);
+
+      const aliceSocket = new WebSocket(url);
+      await waitForOpen(aliceSocket);
+      send(aliceSocket, { type: 'join', docId, token });
+      await waitForMessage(aliceSocket); // joined
+      await waitForMessage(aliceSocket); // presence: just alice
+
+      const aliceNotifiedOfBob = waitForMessage(aliceSocket);
+      const bobSocket1 = new WebSocket(url);
+      await waitForOpen(bobSocket1);
+      send(bobSocket1, { type: 'join', docId, token: bob.token });
+      await waitForMessage(bobSocket1); // joined
+      await waitForMessage(bobSocket1); // presence
+      await aliceNotifiedOfBob; // alice notified of bob's first connection
+
+      // Bob opens a second tab on the SAME doc — the roster doesn't change (bob was
+      // already counted), so alice should get nothing further.
+      const bobSocket2 = new WebSocket(url);
+      await waitForOpen(bobSocket2);
+      send(bobSocket2, { type: 'join', docId, token: bob.token });
+      await waitForMessage(bobSocket2); // joined
+      await waitForMessage(bobSocket2); // presence (bob's own snapshot, still real)
+
+      await expectNoMessage(aliceSocket);
+
+      aliceSocket.close();
+      bobSocket1.close();
+      bobSocket2.close();
+    });
+
+    it('notifies remaining clients when a user fully disconnects (their last connection)', async () => {
+      const docId = await createTestDoc(app, userId);
+      const bob = await inviteCollaborator(app, docId);
+
+      const aliceSocket = new WebSocket(url);
+      await waitForOpen(aliceSocket);
+      send(aliceSocket, { type: 'join', docId, token });
+      await waitForMessage(aliceSocket); // joined
+      await waitForMessage(aliceSocket); // presence: just alice
+
+      const aliceNotifiedOfBobJoin = waitForMessage(aliceSocket);
+      const bobSocket = new WebSocket(url);
+      await waitForOpen(bobSocket);
+      send(bobSocket, { type: 'join', docId, token: bob.token });
+      await waitForMessage(bobSocket); // joined
+      await waitForMessage(bobSocket); // presence
+      await aliceNotifiedOfBobJoin;
+
+      const aliceNotifiedOfBobLeave = waitForMessage(aliceSocket);
+      bobSocket.close();
+      const leaveMessage = await aliceNotifiedOfBobLeave;
+
+      expect(leaveMessage.type).toBe('presence');
+      if (leaveMessage.type !== 'presence') throw new Error('unreachable');
+      expect(leaveMessage.users.map((u) => u.userId)).toEqual([userId]);
+
+      aliceSocket.close();
+    });
+
+    it("does not notify other clients when only ONE of a user's several tabs closes", async () => {
+      const docId = await createTestDoc(app, userId);
+      const bob = await inviteCollaborator(app, docId);
+
+      const aliceSocket = new WebSocket(url);
+      await waitForOpen(aliceSocket);
+      send(aliceSocket, { type: 'join', docId, token });
+      await waitForMessage(aliceSocket); // joined
+      await waitForMessage(aliceSocket); // presence: just alice
+
+      const aliceNotifiedOfBob = waitForMessage(aliceSocket);
+      const bobSocket1 = new WebSocket(url);
+      await waitForOpen(bobSocket1);
+      send(bobSocket1, { type: 'join', docId, token: bob.token });
+      await waitForMessage(bobSocket1);
+      await waitForMessage(bobSocket1);
+      await aliceNotifiedOfBob;
+
+      const bobSocket2 = new WebSocket(url);
+      await waitForOpen(bobSocket2);
+      send(bobSocket2, { type: 'join', docId, token: bob.token });
+      await waitForMessage(bobSocket2);
+      await waitForMessage(bobSocket2);
+
+      // Bob still has bobSocket2 open on this doc — closing bobSocket1 shouldn't
+      // change the roster.
+      bobSocket1.close();
+      await expectNoMessage(aliceSocket);
+
+      aliceSocket.close();
+      bobSocket2.close();
+    });
+  });
+
+  describe('cursor', () => {
+    it('throttles rapid cursor updates instead of delivering them one-for-one', async () => {
+      const docId = await createTestDoc(app, userId);
+      const bob = await inviteCollaborator(app, docId);
+
+      const aliceSocket = new WebSocket(url);
+      await waitForOpen(aliceSocket);
+      send(aliceSocket, { type: 'join', docId, token });
+      await waitForMessage(aliceSocket);
+      await waitForMessage(aliceSocket);
+
+      const aliceNotifiedOfBob = waitForMessage(aliceSocket);
+      const bobSocket = new WebSocket(url);
+      await waitForOpen(bobSocket);
+      send(bobSocket, { type: 'join', docId, token: bob.token });
+      await waitForMessage(bobSocket);
+      await waitForMessage(bobSocket);
+      await aliceNotifiedOfBob;
+
+      const received: number[] = [];
+      const collector = (data: Buffer): void => {
+        const parsed = JSON.parse(data.toString()) as ServerMessage;
+        if (parsed.type === 'cursor') received.push(parsed.position);
+      };
+      aliceSocket.on('message', collector);
+
+      // A burst well within the default 100ms throttle window (CURSOR_THROTTLE_MS) —
+      // sent as fast as this loop can push frames onto the socket.
+      for (let position = 1; position <= 20; position++) {
+        send(bobSocket, { type: 'cursor', docId, position });
+      }
+      await sleep(150); // longer than the throttle window, so the trailing edge fires too
+
+      aliceSocket.off('message', collector);
+
+      expect(received.length).toBeGreaterThan(0);
+      expect(received.length).toBeLessThan(20);
+      expect(received[0]).toBe(1); // leading edge: the first update, delivered immediately
+      expect(received[received.length - 1]).toBe(20); // trailing edge: the latest position
+
+      aliceSocket.close();
+      bobSocket.close();
+    });
   });
 });
