@@ -161,8 +161,29 @@ built: there is currently no `docs`/`users` table and `SyncGateway` accepts any
 already absorbed into `LAT-E1B`'s Redis fan-out and Postgres snapshotting. No separate
 work planned under those numbers.
 
-**Not started:**
-- `LAT-E5`: Product polish & launch
+**Not started (next sprint — `LAT-E5`, repurposed: Live Presence & Cursors):**
+Repurposes the `LAT-E5` slot from the original roadmap ("Product polish & launch") —
+same pattern as `LAT-E2`'s repurposing. That broader original scope (deployment, rate
+limiting, a real schema migration tool, and the other gaps flagged honestly in
+ADR-0005/ADR-0006) is deferred to a future epic, not this one. Instead, this closes the
+one still-unbuilt v1 GOAL from `docs/DESIGN.md` itself — live presence and cursors,
+explicitly deferred out of every sprint so far (`src/sync/protocol.ts`: "no presence
+ticket yet"). Jira epic `SCRUM-44`.
+- ⏳ `SCRUM-45`: `PresenceRegistryService` — tracks connected users per doc, in-memory,
+  per-instance (parallel to `ConnectionRegistryService`, not merged into it)
+- ⏳ `SCRUM-46`: Extend `protocol.ts` + `SyncGateway` — `cursor`/`presence` message
+  types, presence snapshot on join, broadcast on join/leave, throttled cursor updates
+- ⏳ `SCRUM-47`: Redis fan-out for presence/cursor updates across server instances —
+  reuses the existing always-through-Redis pattern (ADR-0005 §2), not a special-cased
+  local-only path
+- ⏳ `SCRUM-48`: Minimal presence UI in `client/index.html` — a "currently viewing"
+  list + lightweight cursor indicator, deliberately not a full rendered caret overlay
+  (not feasible in a plain `<textarea>`, and not the harness's job)
+- ⏳ `SCRUM-49`: e2e tests — presence snapshot, join/leave notifications, cursor
+  throttling, cross-instance correctness (extending the `sync-fanout.e2e-spec.ts`
+  pattern)
+- ⏳ `SCRUM-50`: ADR — presence & cursor design decisions (ephemeral-only, no Postgres
+  persistence; Redis fan-out reuse; throttling approach; minimal client scope)
 
 ## Conventions Established So Far
 
