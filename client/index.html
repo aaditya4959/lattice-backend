@@ -9,6 +9,10 @@
     #status { font-size: 13px; color: #666; margin-bottom: 8px; }
     #status.connected { color: #0a7c2f; }
     #status.disconnected { color: #b3261e; }
+    #presence { font-size: 13px; color: #444; margin-top: 8px; }
+    #presence-list { list-style: none; margin: 4px 0 0; padding: 0; }
+    #presence-list li { padding: 2px 0; }
+    #presence-list .position { color: #888; font-family: ui-monospace, monospace; }
   </style>
 </head>
 <body>
@@ -29,6 +33,10 @@
   </p>
   <div id="status">connecting…</div>
   <textarea id="editor" placeholder="Start typing…"></textarea>
+  <div id="presence">
+    <strong>Currently viewing:</strong>
+    <ul id="presence-list"></ul>
+  </div>
 
   <script type="module">
     // SCRUM-32: a minimal manual-verification harness for the sync engine, not a
@@ -63,6 +71,20 @@
     }
     document.getElementById('doc-id').textContent = docId;
 
+    // Decoded client-side purely to label "(you)" in the presence list below — not a
+    // security operation (the signature isn't checked; the server independently
+    // verifies the token on every `join`), just a display convenience.
+    function decodeJwtSub(rawToken) {
+      try {
+        const payload = rawToken.split('.')[1];
+        const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+        return JSON.parse(json).sub;
+      } catch {
+        return null;
+      }
+    }
+    const myUserId = decodeJwtSub(token);
+
     const doc = new Y.Doc();
     const ytext = doc.getText('content');
     const REMOTE = Symbol('remote'); // origin tag for updates applied FROM the server
@@ -73,6 +95,59 @@
     function setStatus(text, cls) {
       statusEl.textContent = text;
       statusEl.className = cls;
+    }
+
+    // SCRUM-48: presence UI. Deliberately minimal, matching this harness's charter —
+    // a "currently viewing" list plus a numeric cursor-position badge per user, not a
+    // rendered caret overlay (a plain <textarea> has no native way to draw more than
+    // one visual caret, and building a rich-text editor just to support that isn't
+    // this harness's job). `presence` messages are always a full roster snapshot
+    // (SyncGateway sends the complete current list every time, never a diff), so
+    // rendering just replaces state wholesale; `cursor` messages arrive separately
+    // and more frequently, updating one user's last-known position in place.
+    const presenceUsers = new Map(); // userId -> { email, position: number | null }
+    const presenceListEl = document.getElementById('presence-list');
+
+    function renderPresence() {
+      presenceListEl.innerHTML = '';
+      for (const [userId, info] of presenceUsers) {
+        const li = document.createElement('li');
+        const label = userId === myUserId ? `${info.email} (you)` : info.email;
+        const position = document.createElement('span');
+        position.className = 'position';
+        position.textContent = info.position == null ? '' : ` — pos ${info.position}`;
+        li.textContent = label;
+        li.appendChild(position);
+        presenceListEl.appendChild(li);
+      }
+    }
+
+    function applyPresenceSnapshot(users) {
+      const next = new Map();
+      for (const user of users) {
+        // Presence snapshots don't carry cursor data (a separate, higher-frequency
+        // message stream — see protocol.ts) — preserve whatever position was already
+        // known for a user who's still present, rather than blanking it out.
+        const existing = presenceUsers.get(user.userId);
+        next.set(user.userId, {
+          email: user.email,
+          position: existing ? existing.position : null,
+        });
+      }
+      presenceUsers.clear();
+      for (const [userId, info] of next) presenceUsers.set(userId, info);
+      renderPresence();
+    }
+
+    function applyCursorUpdate(userId, position) {
+      const info = presenceUsers.get(userId);
+      if (!info) return; // a cursor update for a user not in the current roster — ignore
+      info.position = position;
+      renderPresence();
+    }
+
+    function sendCursor() {
+      send({ type: 'cursor', docId, position: editor.selectionStart });
     }
 
     // Renders ytext into the textarea, preserving cursor position (shifted by the
@@ -120,7 +195,16 @@
         if (oldEnd > prefix) ytext.delete(prefix, oldEnd - prefix);
         if (newEnd > prefix) ytext.insert(prefix, newValue.slice(prefix, newEnd));
       });
+      sendCursor(); // typing moves the caret too, not just the content
     });
+
+    // Caret-only movement (arrow keys, clicking without typing) doesn't fire
+    // `input` — these two catch what it misses. No client-side throttling here,
+    // same precedent as the `input` handler above sending a Yjs update per
+    // keystroke: the server's CursorThrottleService (SCRUM-46) is what coalesces a
+    // burst into a reasonable broadcast rate, not the sender.
+    editor.addEventListener('click', sendCursor);
+    editor.addEventListener('keyup', sendCursor);
 
     let socket;
     let reconnectDelay = 500;
@@ -147,6 +231,12 @@
           case 'update':
             Y.applyUpdate(doc, fromBase64(message.update), REMOTE);
             break;
+          case 'presence':
+            applyPresenceSnapshot(message.users);
+            break;
+          case 'cursor':
+            applyCursorUpdate(message.userId, message.position);
+            break;
           case 'error':
             console.error('[lattice] server error', message.code, message.message);
             if (message.code === 'unauthorized') {
@@ -161,6 +251,11 @@
 
       socket.addEventListener('close', () => {
         setStatus('disconnected — reconnecting…', 'disconnected');
+        // Stale once disconnected — this client's own connection to the doc is gone,
+        // so the server-side presence state it was reflecting no longer applies. A
+        // fresh snapshot arrives via `joined`/`presence` once reconnected.
+        presenceUsers.clear();
+        renderPresence();
         setTimeout(connect, reconnectDelay);
         reconnectDelay = Math.min(reconnectDelay * 2, 5000);
       });
