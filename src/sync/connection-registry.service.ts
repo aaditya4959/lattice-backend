@@ -11,6 +11,14 @@ export interface LatticeSocket extends WebSocket {
   clientId: string;
   docId?: string;
   userId?: string;
+  /**
+   * Set alongside `userId` at join time (SCRUM-46). Needed on the socket itself, not
+   * just looked up from the JWT payload at join time, because SCRUM-47's roll-call
+   * re-announcement (SyncGateway.handleRemotePresence) has to enumerate a doc's
+   * currently-connected LOCAL sockets and re-publish each one's identity — by then,
+   * the original join's JWT payload is long gone.
+   */
+  email?: string;
 }
 
 /**
