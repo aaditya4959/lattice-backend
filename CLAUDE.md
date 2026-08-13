@@ -225,11 +225,29 @@ ticket yet"). Jira epic `SCRUM-44`.
   `python3 -m http.server` since `file://` navigation is blocked): live join/leave
   updates to the list, live cursor-position badge updates while typing, and the
   list clearing the departed user the moment a tab closes.
-- ⏳ `SCRUM-49`: e2e tests — presence snapshot, join/leave notifications, cursor
+- ✅ `SCRUM-49`: e2e tests — presence snapshot, join/leave notifications, cursor
   throttling, cross-instance correctness (extending the `sync-fanout.e2e-spec.ts`
-  pattern)
-- ⏳ `SCRUM-50`: ADR — presence & cursor design decisions (ephemeral-only, no Postgres
-  persistence; Redis fan-out reuse; throttling approach; minimal client scope)
+  pattern). Most of this ticket's acceptance criteria was already covered as part of
+  SCRUM-46/47's own verification (initial snapshot, join/leave/dedup notifications,
+  cursor throttling all same-instance in `sync.e2e-spec.ts`; presence convergence +
+  cursor delivery cross-instance in `sync-fanout.e2e-spec.ts`) — the one real gap was
+  an automated cross-instance *disconnect* notification test, added here.
+- ✅ `SCRUM-50`: `docs/adr/0007-presence-and-cursors.md` — why presence is
+  ephemeral (never persisted, unlike `doc_snapshots`) and dedupes by user, not by
+  socket; cursor positions as raw text offsets, not CRDT-anchored; the
+  leading+trailing cursor throttle; why cross-instance fan-out reuses
+  `RedisFanoutService`'s architecture but on a separate `presence:<id>` channel, not
+  the same one document updates use, including the roll-call mechanism (Redis
+  pub/sub has no memory) and why `joined`/`left` get a direct local
+  apply-and-broadcast while `cursor` is publish-only-through-the-echo; and the
+  presence-subscription ordering bug SCRUM-47's real-infra verification surfaced,
+  documented as a Consequence rather than left implicit in commit history. Note:
+  this file was independently written and already committed by another session
+  before I got to it — I initially overwrote it without checking git history first
+  (caught by the user), then restored the original rather than keeping mine, since
+  the two covered the same ground and the existing one was already thorough.
+
+`LAT-E5` is now complete — all six tickets (SCRUM-45 through SCRUM-50) done.
 
 ## Conventions Established So Far
 

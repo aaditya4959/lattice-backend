@@ -250,4 +250,36 @@ describe('Sync fan-out across server instances (e2e)', () => {
     clientOnA.close();
     clientOnB.close();
   });
+
+  it('notifies a client on one instance when a user disconnects on the other', async () => {
+    const docId = await createTestDoc(instanceA.app, userId);
+    const bob = await inviteCollaborator(instanceA.app, docId);
+
+    const clientOnA = new WebSocket(instanceA.url);
+    await waitForOpen(clientOnA);
+    send(clientOnA, { type: 'join', docId, token });
+    await waitForMessage(clientOnA); // joined
+    await waitForMessage(clientOnA); // presence: just alice
+
+    const clientOnB = new WebSocket(instanceB.url);
+    await waitForOpen(clientOnB);
+    send(clientOnB, { type: 'join', docId, token: bob.token });
+    await waitForMessage(clientOnB); // joined
+
+    // Let the roll-call settle on both sides before testing the disconnect itself —
+    // otherwise a leftover in-flight `presence` message from convergence could be
+    // mistaken for the one this test actually cares about.
+    await waitForPresenceIncluding(clientOnA, [userId, bob.userId]);
+    await waitForPresenceIncluding(clientOnB, [userId, bob.userId]);
+
+    const bobNotifiedOfAliceLeaving = waitForMessage(clientOnB);
+    clientOnA.close();
+
+    const message = await bobNotifiedOfAliceLeaving;
+    expect(message.type).toBe('presence');
+    if (message.type !== 'presence') throw new Error('unreachable');
+    expect(message.users.map((user) => user.userId)).toEqual([bob.userId]);
+
+    clientOnB.close();
+  });
 });
