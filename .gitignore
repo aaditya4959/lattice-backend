@@ -22,6 +22,10 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Claude Code worktrees — each is its own git repo (embedded, not a submodule),
+# ephemeral local dev state that shouldn't be tracked or staged from the outer repo
+.claude/worktrees/
+
 # test coverage
 coverage/
 
