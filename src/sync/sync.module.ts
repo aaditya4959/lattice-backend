@@ -4,6 +4,7 @@ import { DocsModule } from '../docs/docs.module';
 import { PersistenceModule } from '../persistence/persistence.module';
 import { ConnectionRegistryService } from './connection-registry.service';
 import { DocRegistryService } from './doc-registry.service';
+import { PresenceRegistryService } from './presence-registry.service';
 import { RedisFanoutService } from './redis-fanout.service';
 import { redisProviders } from './redis.provider';
 import { SyncGateway } from './sync.gateway';
@@ -17,6 +18,7 @@ import { SyncGateway } from './sync.gateway';
     SyncGateway,
     DocRegistryService,
     ConnectionRegistryService,
+    PresenceRegistryService,
     RedisFanoutService,
     ...redisProviders,
   ],

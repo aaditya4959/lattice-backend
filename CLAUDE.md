@@ -169,8 +169,14 @@ ADR-0005/ADR-0006) is deferred to a future epic, not this one. Instead, this clo
 one still-unbuilt v1 GOAL from `docs/DESIGN.md` itself — live presence and cursors,
 explicitly deferred out of every sprint so far (`src/sync/protocol.ts`: "no presence
 ticket yet"). Jira epic `SCRUM-44`.
-- ⏳ `SCRUM-45`: `PresenceRegistryService` — tracks connected users per doc, in-memory,
-  per-instance (parallel to `ConnectionRegistryService`, not merged into it)
+- ✅ `SCRUM-45`: `PresenceRegistryService` (`src/sync/presence-registry.service.ts`) —
+  tracks connected users per doc, in-memory, per-instance (parallel to
+  `ConnectionRegistryService`, not merged into it). Dedupes by `userId`: a user with
+  two tabs open on the same doc holds two `clientId`s but is one presence entry;
+  `add`/`remove` return whether this was the user's first/last connection to that doc,
+  so a caller (SCRUM-46) can tell "a real join/leave" from "just another tab."
+  Registered as a `SyncModule` provider now but not yet injected anywhere — SCRUM-46
+  wires it into `SyncGateway`.
 - ⏳ `SCRUM-46`: Extend `protocol.ts` + `SyncGateway` — `cursor`/`presence` message
   types, presence snapshot on join, broadcast on join/leave, throttled cursor updates
 - ⏳ `SCRUM-47`: Redis fan-out for presence/cursor updates across server instances —
