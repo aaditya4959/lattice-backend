@@ -215,9 +215,16 @@ ticket yet"). Jira epic `SCRUM-44`.
   subscription to after both sends — see `SyncGateway.handleJoin`'s comments for the
   full reasoning on why that's safe (no equivalent "read a definitive snapshot" step
   for presence to miss, unlike doc-update's subscribe-before-read ordering).
-- ⏳ `SCRUM-48`: Minimal presence UI in `client/index.html` — a "currently viewing"
-  list + lightweight cursor indicator, deliberately not a full rendered caret overlay
-  (not feasible in a plain `<textarea>`, and not the harness's job)
+- ✅ `SCRUM-48`: `client/index.html` shows a "Currently viewing" list (labeling the
+  local user "(you)", decoded client-side from the JWT payload purely for display —
+  not a security operation) and a numeric cursor-position badge per user, updated
+  from the `presence` (full roster snapshot) and `cursor` (per-user position, more
+  frequent) messages respectively. No rendered caret overlay — not feasible in a
+  plain `<textarea>` and not this harness's job, per its existing charter. Manually
+  verified in two real browser tabs (via `claude-in-chrome`, served over a plain
+  `python3 -m http.server` since `file://` navigation is blocked): live join/leave
+  updates to the list, live cursor-position badge updates while typing, and the
+  list clearing the departed user the moment a tab closes.
 - ⏳ `SCRUM-49`: e2e tests — presence snapshot, join/leave notifications, cursor
   throttling, cross-instance correctness (extending the `sync-fanout.e2e-spec.ts`
   pattern)
