@@ -5,7 +5,11 @@ import { fromBase64, toBase64 } from 'lib0/buffer';
 import * as Y from 'yjs';
 import WebSocket from 'ws';
 import { AppModule } from '../src/app.module';
-import { createTestDoc, registerTestUser } from './helpers/docs';
+import {
+  createTestDoc,
+  inviteCollaborator,
+  registerTestUser,
+} from './helpers/docs';
 import { textOf } from './helpers/yjs';
 import { send, waitForMessage, waitForOpen } from './helpers/ws';
 
@@ -25,6 +29,30 @@ async function createInstance(): Promise<Instance> {
   await app.listen(0);
   const baseUrl = (await app.getUrl()).replace(/^http/, 'ws');
   return { app, url: `${baseUrl}/sync`, module: moduleFixture };
+}
+
+/**
+ * Waits for `socket`'s next `presence` messages until one includes every id in
+ * `userIds`, up to `maxAttempts` messages. Needed because SCRUM-47's cross-instance
+ * roll-call is inherently eventually-consistent: a newly-subscribing instance's FIRST
+ * presence snapshot for a client may not yet include a user who joined earlier on a
+ * DIFFERENT instance — it self-corrects via a follow-up broadcast once the roll-call
+ * response arrives, typically within one Redis round trip, but not synchronously.
+ */
+async function waitForPresenceIncluding(
+  socket: WebSocket,
+  userIds: string[],
+  maxAttempts = 5,
+): Promise<string[]> {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const message = await waitForMessage(socket);
+    if (message.type !== 'presence') continue;
+    const seen = message.users.map((user) => user.userId);
+    if (userIds.every((id) => seen.includes(id))) return seen;
+  }
+  throw new Error(
+    `Did not see a presence snapshot including [${userIds.join(', ')}] within ${maxAttempts} messages`,
+  );
 }
 
 /**
@@ -149,5 +177,77 @@ describe('Sync fan-out across server instances (e2e)', () => {
     firstClientOnB.close();
     clientOnA.close();
     secondClientOnB.close();
+  });
+
+  it('propagates presence across instances — a late-joining instance learns about an already-connected user via roll-call', async () => {
+    const docId = await createTestDoc(instanceA.app, userId);
+    const bob = await inviteCollaborator(instanceA.app, docId);
+
+    // Alice joins on instance A first.
+    const clientOnA = new WebSocket(instanceA.url);
+    await waitForOpen(clientOnA);
+    send(clientOnA, { type: 'join', docId, token });
+    await waitForMessage(clientOnA); // joined
+    await waitForMessage(clientOnA); // presence: just alice
+
+    const aliceEventuallySeesBob = waitForPresenceIncluding(clientOnA, [
+      userId,
+      bob.userId,
+    ]);
+
+    // Bob joins on instance B — a DIFFERENT instance whose presence subscription for
+    // this doc didn't exist until this exact join, so it never saw alice's earlier
+    // join event. It has to roll-call to learn about her.
+    const clientOnB = new WebSocket(instanceB.url);
+    await waitForOpen(clientOnB);
+    send(clientOnB, { type: 'join', docId, token: bob.token });
+    await waitForMessage(clientOnB); // joined
+
+    const bobSeenUsers = await waitForPresenceIncluding(clientOnB, [
+      userId,
+      bob.userId,
+    ]);
+    expect(bobSeenUsers.sort()).toEqual([userId, bob.userId].sort());
+
+    // Symmetrically, alice (already connected, on the OTHER instance) is notified
+    // once bob's join propagates back to instance A.
+    const aliceSeenUsers = await aliceEventuallySeesBob;
+    expect(aliceSeenUsers.sort()).toEqual([userId, bob.userId].sort());
+
+    clientOnA.close();
+    clientOnB.close();
+  });
+
+  it('delivers cursor updates across instances', async () => {
+    const docId = await createTestDoc(instanceA.app, userId);
+    const bob = await inviteCollaborator(instanceA.app, docId);
+
+    const clientOnA = new WebSocket(instanceA.url);
+    await waitForOpen(clientOnA);
+    send(clientOnA, { type: 'join', docId, token });
+    await waitForMessage(clientOnA); // joined
+    await waitForMessage(clientOnA); // presence: just alice
+
+    const clientOnB = new WebSocket(instanceB.url);
+    await waitForOpen(clientOnB);
+    send(clientOnB, { type: 'join', docId, token: bob.token });
+    await waitForMessage(clientOnB); // joined
+
+    // Let the roll-call settle on both sides first, so the only thing left in either
+    // socket's queue afterward is the cursor message this test actually cares about.
+    await waitForPresenceIncluding(clientOnA, [userId, bob.userId]);
+    await waitForPresenceIncluding(clientOnB, [userId, bob.userId]);
+
+    const cursorOnB = waitForMessage(clientOnB);
+    send(clientOnA, { type: 'cursor', docId, position: 42 });
+
+    const message = await cursorOnB;
+    expect(message.type).toBe('cursor');
+    if (message.type !== 'cursor') throw new Error('unreachable');
+    expect(message.userId).toBe(userId);
+    expect(message.position).toBe(42);
+
+    clientOnA.close();
+    clientOnB.close();
   });
 });

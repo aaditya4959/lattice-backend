@@ -42,3 +42,21 @@ export async function registerUserWithDoc(
   const docId = await createTestDoc(app, userId);
   return { userId, token, docId };
 }
+
+/**
+ * Registers a second user and invites them as a collaborator on `docId` — presence/
+ * cursor tests need two genuinely distinct authenticated users on the same doc, not
+ * just two sockets for the same user. `app` only needs to share a Postgres/JWT_SECRET
+ * with whichever instance the resulting token gets used against (see
+ * sync-fanout.e2e-spec.ts, where it's called against instanceA but the returned token
+ * is used to join on instanceB).
+ */
+export async function inviteCollaborator(
+  app: INestApplication,
+  docId: string,
+): Promise<{ userId: string; token: string }> {
+  const email = `${Date.now()}-${randomUUID()}@example.test`;
+  const collaborator = await registerTestUser(app, email);
+  await app.get(DocsService).inviteCollaborator(docId, email);
+  return collaborator;
+}

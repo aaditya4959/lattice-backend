@@ -6,9 +6,12 @@ import { fromBase64, toBase64 } from 'lib0/buffer';
 import * as Y from 'yjs';
 import WebSocket from 'ws';
 import { AppModule } from '../src/app.module';
-import { DocsService } from '../src/docs/docs.service';
 import { ServerMessage } from '../src/sync/protocol';
-import { createTestDoc, registerTestUser } from './helpers/docs';
+import {
+  createTestDoc,
+  inviteCollaborator,
+  registerTestUser,
+} from './helpers/docs';
 import { textOf } from './helpers/yjs';
 import {
   expectNoMessage,
@@ -17,21 +20,6 @@ import {
   waitForMessage,
   waitForOpen,
 } from './helpers/ws';
-
-/**
- * Registers a second user and invites them as a collaborator on `docId` — the
- * presence/cursor tests below need two genuinely distinct authenticated users on the
- * same doc, not just two sockets for the same user.
- */
-async function inviteCollaborator(
-  app: INestApplication,
-  docId: string,
-): Promise<{ userId: string; token: string }> {
-  const email = `${Date.now()}-${randomUUID()}@example.test`;
-  const collaborator = await registerTestUser(app, email);
-  await app.get(DocsService).inviteCollaborator(docId, email);
-  return collaborator;
-}
 
 describe('SyncGateway (e2e)', () => {
   let app: INestApplication;

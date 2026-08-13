@@ -20,7 +20,11 @@ import { CursorThrottleService } from './cursor-throttle.service';
 import { DocRegistryService } from './doc-registry.service';
 import { PresenceRegistryService } from './presence-registry.service';
 import { ClientMessage, ServerMessage } from './protocol';
-import { RedisFanoutService, UpdateEnvelope } from './redis-fanout.service';
+import {
+  PresenceChannelEnvelope,
+  RedisFanoutService,
+  UpdateEnvelope,
+} from './redis-fanout.service';
 
 /**
  * The real-time sync gateway: raw `ws` per ADR-0002, wired to Yjs, fanned out across
@@ -59,15 +63,30 @@ import { RedisFanoutService, UpdateEnvelope } from './redis-fanout.service';
  *
  * `join` also requires a valid JWT (SCRUM-38) — see handleJoin.
  *
- * Presence (SCRUM-46) piggybacks on `ConnectionRegistryService`'s existing local
- * socket set for delivery (`broadcastToOthers` iterates the same per-doc socket set
- * `handleRemoteUpdate` already uses) but tracks *users*, not sockets, in a separate
- * `PresenceRegistryService` — a user with two tabs open is one presence entry. Cursor
- * broadcasts are throttled per connection via `CursorThrottleService` since position
- * changes far more often than document edits. Both are local-instance-only for now;
- * cross-instance presence fan-out over Redis is SCRUM-47, not built yet.
+ * Presence (SCRUM-46) tracks *users*, not sockets, in a separate
+ * `PresenceRegistryService` — a user with two tabs open is one presence entry.
+ * Cursor updates are throttled per connection via `CursorThrottleService` since
+ * position changes far more often than document edits.
  *
- * Ticket: SCRUM-30 (LAT-E1B), SCRUM-38 (LAT-E2), SCRUM-46 (LAT-E5)
+ * Cross-instance presence/cursor fan-out (SCRUM-47) is a SEPARATE Redis channel per
+ * doc (`presence:<id>`, via RedisFanoutService's `*Presence` methods) from the one
+ * document updates use (`doc:<id>`), but the SAME philosophy: every instance applies
+ * every envelope — including its own echoed back through its own subscription — and
+ * independently decides whether to notify its own local clients
+ * (handleRemotePresence). `join`/`left` additionally get a direct, immediate local
+ * apply+broadcast in handleJoin/handleDisconnect (mirroring handleUpdate's direct
+ * apply for document content) so the acting client's own siblings don't wait on a
+ * Redis round trip; this is safe specifically because that direct call updates this
+ * instance's PresenceRegistryService state BEFORE the echo arrives, so the echo's own
+ * `isNewPresence`/`wasLastConnection` check correctly comes back false and skips a
+ * duplicate broadcast — cursor has no such direct path (see handleCursor) since
+ * cursor envelopes are unconditionally forwarded either way, so there's no staleness
+ * risk to route around. A newly-subscribing instance also has no way to learn about
+ * connections that predate its subscription (Redis pub/sub has no memory) — it
+ * requests a `roll-call` on subscribe, and every already-subscribed instance
+ * re-announces its own local users in response.
+ *
+ * Ticket: SCRUM-30 (LAT-E1B), SCRUM-38 (LAT-E2), SCRUM-46/SCRUM-47 (LAT-E5)
  */
 @WebSocketGateway({ path: '/sync' })
 export class SyncGateway
@@ -103,6 +122,9 @@ export class SyncGateway
       this.fanout
         .unsubscribe(docId)
         .catch((err: unknown) => this.logger.error(err));
+      this.fanout
+        .unsubscribePresence(docId)
+        .catch((err: unknown) => this.logger.error(err));
     }
 
     if (client.userId) {
@@ -111,7 +133,21 @@ export class SyncGateway
         client.userId,
         client.clientId,
       );
-      if (wasLastConnection) this.broadcastPresence(docId, client);
+      if (wasLastConnection) {
+        this.broadcastPresence(docId, client.clientId);
+      }
+      // Cross-instance fan-out: published unconditionally (not gated on
+      // wasLastConnection) so every OTHER instance's own PresenceRegistryService — a
+      // full replica, not a summary — correctly drops this exact clientId regardless
+      // of whether it happened to be this user's last connection FROM THIS
+      // INSTANCE'S local perspective specifically.
+      this.fanout
+        .publishPresence(docId, {
+          kind: 'left',
+          userId: client.userId,
+          clientId: client.clientId,
+        })
+        .catch((err: unknown) => this.logger.error(err));
     }
   }
 
@@ -213,8 +249,23 @@ export class SyncGateway
     }
 
     client.userId = payload.sub;
+    client.email = payload.email;
     client.docId = docId;
     const isFirstLocalClient = this.connections.add(docId, client);
+
+    // Presence is added locally now (synchronous), not after subscribing below — see
+    // the comment on subscribePresence's placement further down for why the ORDER
+    // between these two matters, not just that both happen.
+    const isNewPresence = this.presence.add(
+      docId,
+      payload.sub,
+      payload.email,
+      client.clientId,
+    );
+
+    // Doc-update subscription stays early, per its own established rationale
+    // (subscribing before reading the snapshot below avoids missing an update that
+    // lands in the gap between the two).
     if (isFirstLocalClient) {
       await this.fanout.subscribe(docId, (envelope) =>
         this.handleRemoteUpdate(docId, envelope),
@@ -228,32 +279,74 @@ export class SyncGateway
       initialState: toBase64(Y.encodeStateAsUpdate(doc)),
     });
 
-    // Presence, not the doc itself: the joining client always gets the current
-    // roster (below), but OTHER clients only need telling when the roster actually
-    // changed — i.e. this was the user's first connection to the doc, not just their
-    // second open tab on one they're already present in.
-    const isNewPresence = this.presence.add(
-      docId,
-      payload.sub,
-      payload.email,
-      client.clientId,
-    );
+    // The joining client always gets the current roster; OTHER LOCAL clients only
+    // need telling when the roster actually changed (a genuinely new user, not just
+    // another open tab). Note this snapshot may not yet include remote users on other
+    // instances if this was the first local client (the roll-call requested below
+    // hasn't gone out, let alone come back, yet) — it self-corrects within one Redis
+    // round trip via a follow-up `presence` broadcast, same as handleRemotePresence's
+    // `joined` case below.
     this.send(client, {
       type: 'presence',
       docId,
       users: this.presence.list(docId),
     });
-    if (isNewPresence) this.broadcastPresence(docId, client);
+    if (isNewPresence) this.broadcastPresence(docId, client.clientId);
+
+    // Presence-channel subscription happens LAST, deliberately, not alongside the
+    // doc-update subscription above. Verified directly against real Redis (not just
+    // ioredis-mock, whose in-process delivery is fast enough to never expose this):
+    // subscribing earlier registers handleRemotePresence before this client's own
+    // `joined`/`presence` messages have been sent, and a fast-enough roll-call
+    // response from another instance — or even this client's own roll-call request
+    // echoing back — can be processed and broadcast to this client's OWN socket
+    // (already present in ConnectionRegistryService by now) before either of those
+    // sends happen, arriving out of order. Subscribing only after both sends removes
+    // the window entirely: nothing can be delivered through a handler that isn't
+    // registered yet. No equivalent gap risk is introduced by waiting — unlike doc
+    // updates, presence has no "read a definitive snapshot" step in between that a
+    // late subscribe could miss; the current local roster it already sent is complete
+    // as far as local knowledge goes, and remote knowledge only ever arrives via this
+    // same asynchronous, self-correcting roll-call round trip regardless of exactly
+    // when the subscription starts.
+    if (isFirstLocalClient) {
+      await this.fanout.subscribePresence(docId, (envelope) =>
+        this.handleRemotePresence(docId, envelope),
+      );
+    }
+
+    // Cross-instance fan-out: published unconditionally (not gated on
+    // isNewPresence), so every OTHER instance's own PresenceRegistryService ends up
+    // with the exact same clientId-level state this instance has, not just a summary
+    // — see handleRemotePresence's `joined` case for why each instance independently
+    // re-deriving "is this new to ME" from that full state is what makes this correct
+    // rather than redundant.
+    this.fanout
+      .publishPresence(docId, {
+        kind: 'joined',
+        userId: payload.sub,
+        email: payload.email,
+        clientId: client.clientId,
+      })
+      .catch((err: unknown) => this.logger.error(err));
   }
 
   /**
-   * Reports a client's own cursor position to every other client on the same doc,
-   * throttled per connection (CursorThrottleService, SCRUM-46) since position changes
-   * far more often than document content. Silently ignored if the client hasn't
-   * completed a `join` for this exact `docId` — there's no meaningful "whose cursor is
-   * this" without an authenticated, joined identity, and this is routine enough
-   * (a stray message before `join` finishes, or for a doc the client isn't on) that an
-   * `error` response would be noise rather than signal.
+   * Reports a client's own cursor position, throttled per connection
+   * (CursorThrottleService, SCRUM-46) since position changes far more often than
+   * document content. Silently ignored if the client hasn't completed a `join` for
+   * this exact `docId` — there's no meaningful "whose cursor is this" without an
+   * authenticated, joined identity, and this is routine enough (a stray message
+   * before `join` finishes, or for a doc the client isn't on) that an `error`
+   * response would be noise rather than signal.
+   *
+   * Publishes only — no direct local broadcast. Unlike `joined`/`left`, a cursor
+   * update has no "is this new" gate to get stale on the origin's own echo (every
+   * cursor envelope is unconditionally forwarded, see handleRemotePresence's `cursor`
+   * case), so there's no correctness reason to special-case local delivery here the
+   * way handleJoin/handleDisconnect do — this can go through the SAME one path
+   * (through Redis, including back to this instance's own other local sockets) that
+   * document updates already use, per ADR-0005 §2.
    */
   private handleCursor(
     client: LatticeSocket,
@@ -266,19 +359,87 @@ export class SyncGateway
       client.clientId,
       { userId, position },
       (update) => {
-        this.broadcastToOthers(docId, client, {
-          type: 'cursor',
-          docId,
-          userId: update.userId,
-          position: update.position,
-        });
+        this.fanout
+          .publishPresence(docId, {
+            kind: 'cursor',
+            fromClientId: client.clientId,
+            userId: update.userId,
+            position: update.position,
+          })
+          .catch((err: unknown) => this.logger.error(err));
       },
     );
   }
 
+  /**
+   * Handles a message from `docId`'s presence Redis channel — from another instance,
+   * or this instance's own publish echoing back through its own subscription (same as
+   * handleRemoteUpdate for document content). Each instance applies every envelope to
+   * its OWN PresenceRegistryService independently and decides independently whether
+   * to notify its OWN local clients; this is what makes it safe for
+   * handleJoin/handleDisconnect to ALSO update presence and broadcast directly
+   * (immediate, no round-trip) without double-notifying local siblings once the echo
+   * arrives — by then, this instance's own state already reflects the change, so its
+   * own `isNewPresence`/`wasLastConnection` check here correctly comes back false.
+   */
+  private handleRemotePresence(
+    docId: string,
+    envelope: PresenceChannelEnvelope,
+  ): void {
+    switch (envelope.kind) {
+      case 'roll-call':
+        // A DIFFERENT instance just subscribed (its first local client for this doc)
+        // and has no way to know about connections that predate its subscription —
+        // Redis pub/sub doesn't replay history. Re-announce every LOCAL socket this
+        // instance already knows about so that instance (and transitively, every
+        // instance, including this one's own echo) converges on the full picture.
+        for (const socket of this.connections.getSockets(docId)) {
+          if (!socket.userId || !socket.email) continue;
+          this.fanout
+            .publishPresence(docId, {
+              kind: 'joined',
+              userId: socket.userId,
+              email: socket.email,
+              clientId: socket.clientId,
+            })
+            .catch((err: unknown) => this.logger.error(err));
+        }
+        return;
+      case 'joined': {
+        const isNewPresence = this.presence.add(
+          docId,
+          envelope.userId,
+          envelope.email,
+          envelope.clientId,
+        );
+        if (isNewPresence) this.broadcastPresence(docId, envelope.clientId);
+        return;
+      }
+      case 'left': {
+        const wasLastConnection = this.presence.remove(
+          docId,
+          envelope.userId,
+          envelope.clientId,
+        );
+        if (wasLastConnection) {
+          this.broadcastPresence(docId, envelope.clientId);
+        }
+        return;
+      }
+      case 'cursor':
+        this.broadcastToOthers(docId, envelope.fromClientId, {
+          type: 'cursor',
+          docId,
+          userId: envelope.userId,
+          position: envelope.position,
+        });
+        return;
+    }
+  }
+
   /** Sends `docId`'s current presence roster to every OTHER local client on that doc. */
-  private broadcastPresence(docId: string, exceptClient: LatticeSocket): void {
-    this.broadcastToOthers(docId, exceptClient, {
+  private broadcastPresence(docId: string, exceptClientId: string): void {
+    this.broadcastToOthers(docId, exceptClientId, {
       type: 'presence',
       docId,
       users: this.presence.list(docId),
@@ -287,11 +448,11 @@ export class SyncGateway
 
   private broadcastToOthers(
     docId: string,
-    exceptClient: LatticeSocket,
+    exceptClientId: string,
     message: ServerMessage,
   ): void {
     for (const socket of this.connections.getSockets(docId)) {
-      if (socket === exceptClient) continue;
+      if (socket.clientId === exceptClientId) continue;
       this.send(socket, message);
     }
   }
@@ -335,15 +496,12 @@ export class SyncGateway
     Y.applyUpdate(doc, fromBase64(envelope.update));
     this.snapshotScheduler.schedule(docId, doc);
 
-    for (const socket of this.connections.getSockets(docId)) {
-      if (socket.clientId === envelope.fromClientId) continue;
-      this.send(socket, {
-        type: 'update',
-        docId,
-        update: envelope.update,
-        fromClientId: envelope.fromClientId,
-      });
-    }
+    this.broadcastToOthers(docId, envelope.fromClientId, {
+      type: 'update',
+      docId,
+      update: envelope.update,
+      fromClientId: envelope.fromClientId,
+    });
   }
 
   private send(client: LatticeSocket, message: ServerMessage): void {

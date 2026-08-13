@@ -192,9 +192,29 @@ ticket yet"). Jira epic `SCRUM-44`.
   fresh `.once('message')` per call, which silently drops messages arriving in the
   same tick as a prior one (exactly what happens now that `joined` and `presence` are
   sent back-to-back) — replaced with a proper per-socket FIFO queue.
-- ⏳ `SCRUM-47`: Redis fan-out for presence/cursor updates across server instances —
-  reuses the existing always-through-Redis pattern (ADR-0005 §2), not a special-cased
-  local-only path
+- ✅ `SCRUM-47`: Second Redis channel per doc (`presence:<id>`, `RedisFanoutService`'s
+  `*Presence` methods) carries `joined`/`left`/`cursor`/`roll-call` envelopes,
+  separate from `doc:<id>`'s document updates but the same "every instance applies
+  every envelope, including its own echo, and decides independently whether to
+  notify its own local clients" philosophy (ADR-0005 §2) — no special-cased
+  local-only path. `roll-call` exists because Redis pub/sub has no memory: an
+  instance that just subscribed (first local client for a doc) has no way to learn
+  about already-connected users on other instances without asking; every
+  already-subscribed instance responds by re-announcing its own local users.
+  `join`/`left` get a direct local apply+broadcast (immediate, no round-trip) in
+  `handleJoin`/`handleDisconnect`, safe specifically because that local state update
+  happens before the echo arrives, so the echo's own check correctly comes back
+  false and skips a duplicate broadcast; cursor has no such direct path since it's
+  unconditionally forwarded either way. Verified directly against real Redis + real
+  Postgres (two genuinely separate processes, not just `ioredis-mock`) — this
+  surfaced and fixed a real ordering bug the mock's fast in-process delivery never
+  exposed: `subscribePresence` was being called before this client's own
+  `joined`/`presence` sends, so a fast-enough roll-call response (including this
+  client's own, echoing back) could be processed and broadcast to the client's own
+  socket before either send happened. Fixed by moving the presence-channel
+  subscription to after both sends — see `SyncGateway.handleJoin`'s comments for the
+  full reasoning on why that's safe (no equivalent "read a definitive snapshot" step
+  for presence to miss, unlike doc-update's subscribe-before-read ordering).
 - ⏳ `SCRUM-48`: Minimal presence UI in `client/index.html` — a "currently viewing"
   list + lightweight cursor indicator, deliberately not a full rendered caret overlay
   (not feasible in a plain `<textarea>`, and not the harness's job)
