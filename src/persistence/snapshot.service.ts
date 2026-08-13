@@ -6,11 +6,13 @@ import { PG_POOL } from './postgres.provider';
 export interface StoredSnapshot {
   state: Uint8Array;
   stateVector: Uint8Array;
+  createdAt: Date;
 }
 
 interface SnapshotRow {
   state: Buffer;
   state_vector: Buffer;
+  created_at: Date;
 }
 
 /**
@@ -41,7 +43,7 @@ export class SnapshotService {
 
   async getLatest(docId: string): Promise<StoredSnapshot | null> {
     const result = await this.pool.query<SnapshotRow>(
-      'SELECT state, state_vector FROM doc_snapshots WHERE doc_id = $1 ORDER BY created_at DESC LIMIT 1',
+      'SELECT state, state_vector, created_at FROM doc_snapshots WHERE doc_id = $1 ORDER BY created_at DESC LIMIT 1',
       [docId],
     );
     const row = result.rows[0];
@@ -49,6 +51,7 @@ export class SnapshotService {
     return {
       state: new Uint8Array(row.state),
       stateVector: new Uint8Array(row.state_vector),
+      createdAt: row.created_at,
     };
   }
 }

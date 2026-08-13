@@ -24,6 +24,8 @@ import { UsersService } from './users.service';
   // JwtAuthGuard exported explicitly (not left to Nest's implicit class-reference
   // resolution) so other modules importing AuthModule — DocsModule, SCRUM-39 — can
   // reliably use `@UseGuards(JwtAuthGuard)` with its JwtService dependency resolved.
-  exports: [JwtModule, JwtAuthGuard],
+  // UsersService exported too (SCRUM-40) — DocsService needs findByEmail() to resolve
+  // an invite target.
+  exports: [JwtModule, JwtAuthGuard, UsersService],
 })
 export class AuthModule {}

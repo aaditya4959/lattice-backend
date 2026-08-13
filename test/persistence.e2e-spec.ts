@@ -20,11 +20,12 @@ import { send, sleep, waitForMessage, waitForOpen } from './helpers/ws';
 const TEST_SNAPSHOT_INTERVAL_MS = 30;
 
 /**
- * Inserts a user + doc row directly (no AuthModule/DocsModule yet — those are later
- * LAT-E2 tickets) so `docId` satisfies doc_snapshots' FK, added in this same ticket
- * (SCRUM-36).
+ * Inserts a user + doc row directly rather than going through AuthModule/DocsModule —
+ * this file is testing SnapshotSchedulerService, not those modules. Returns the owner's
+ * id so the caller can mint a `join` token that SCRUM-41's access check (owner or
+ * collaborator) will actually accept for this doc.
  */
-async function seedDoc(pool: Pool, docId: string): Promise<void> {
+async function seedDoc(pool: Pool, docId: string): Promise<string> {
   const ownerId = randomUUID();
   await pool.query(
     'INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3)',
@@ -34,6 +35,7 @@ async function seedDoc(pool: Pool, docId: string): Promise<void> {
     'INSERT INTO docs (id, owner_id, title) VALUES ($1, $2, $3)',
     [docId, ownerId, 'Test doc'],
   );
+  return ownerId;
 }
 
 /**
@@ -63,8 +65,12 @@ describe('Persistence — snapshot writes (e2e, mocked Postgres)', () => {
     const url = `${baseUrl}/sync`;
 
     const docId = randomUUID();
-    await seedDoc(module.get(PG_POOL), docId);
-    const token = await signTestToken(module.get(JwtService));
+    const ownerId = await seedDoc(module.get(PG_POOL), docId);
+    const token = await signTestToken(
+      module.get(JwtService),
+      undefined,
+      ownerId,
+    );
 
     const client = new WebSocket(url);
     await waitForOpen(client);

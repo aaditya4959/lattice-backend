@@ -1,13 +1,11 @@
-import { randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
 import { Test, TestingModule } from '@nestjs/testing';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { fromBase64, toBase64 } from 'lib0/buffer';
 import * as Y from 'yjs';
 import WebSocket from 'ws';
 import { AppModule } from '../src/app.module';
-import { signTestToken } from './helpers/auth';
+import { createTestDoc, registerTestUser } from './helpers/docs';
 import { textOf } from './helpers/yjs';
 import { send, sleep, waitForMessage, waitForOpen } from './helpers/ws';
 
@@ -27,6 +25,7 @@ describe('Concurrent-edit convergence (e2e)', () => {
   let app: INestApplication;
   let url: string;
   let token: string;
+  let userId: string;
 
   beforeEach(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -38,7 +37,7 @@ describe('Concurrent-edit convergence (e2e)', () => {
     await app.listen(0);
     const baseUrl = (await app.getUrl()).replace(/^http/, 'ws');
     url = `${baseUrl}/sync`;
-    token = await signTestToken(moduleFixture.get(JwtService));
+    ({ userId, token } = await registerTestUser(app));
   });
 
   afterEach(async () => {
@@ -46,7 +45,7 @@ describe('Concurrent-edit convergence (e2e)', () => {
   });
 
   it('converges two concurrent, mutually-unaware edits regardless of application order', async () => {
-    const docId = randomUUID();
+    const docId = await createTestDoc(app, userId);
 
     const socketA = new WebSocket(url);
     const socketB = new WebSocket(url);

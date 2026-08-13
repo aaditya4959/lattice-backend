@@ -118,24 +118,91 @@ Original `LAT-E2` scope ("real-time networking layer") is done, absorbed into
 `LAT-E1B` — this slot now covers what DESIGN.md §4.1/§5 always specified but was never
 built: there is currently no `docs`/`users` table and `SyncGateway` accepts any
 `docId` from any client with zero authorization.
-- ⏳ `users`/`docs`/`doc_collaborators` schema bootstrap; add the FK from
+- ✅ `SCRUM-36`: `users`/`docs`/`doc_collaborators` schema bootstrap; FK from
   `doc_snapshots.doc_id` → `docs.id` (missing since SCRUM-30)
-- ⏳ `POST /auth/register` / `POST /auth/login` — password hashing + JWT
-- ⏳ Auth guard for REST routes + token validation on `join` (DESIGN.md's `join.token`
-  field, deferred since SCRUM-28 — no AuthModule existed yet)
-- ⏳ `DocsModule`: create/list docs
-- ⏳ `DocsModule`: doc metadata, delete, invite collaborator
-- ⏳ Authorize `SyncGateway` joins against real doc ownership/collaboration — the
-  actual fix for the zero-authorization gap above
-- ⏳ Integration test: full register → login → create doc → join → edit → invite flow
-- ⏳ ADR: auth strategy decisions
+- ✅ `SCRUM-37`: `POST /auth/register` / `POST /auth/login` — bcrypt password hashing +
+  JWT (`AuthModule`, hand-rolled, no Passport — see `src/auth/`)
+- ✅ `SCRUM-38`: `JwtAuthGuard` for REST routes + token validation on `join`
+  (DESIGN.md's `join.token` field, deferred since SCRUM-28 — no AuthModule existed yet)
+- ✅ `SCRUM-39`: `DocsModule`: `POST /docs` (create), `GET /docs` (list, owner +
+  collaborator access)
+- ✅ `SCRUM-40`: `DocsModule`: `GET /docs/:id` (metadata + `latestSnapshotAt`),
+  `DELETE /docs/:id` (owner-only), `POST /docs/:id/invite` (owner-only, by email).
+  Found and fixed a real bug along the way: `doc_snapshots`/`doc_collaborators` had no
+  `ON DELETE CASCADE` on their `doc_id` FK, so deleting any doc that actually had
+  snapshots or collaborators would have failed. `PersistenceModule`'s FK bootstrap is
+  now self-healing (`DROP CONSTRAINT IF EXISTS` + `ADD CONSTRAINT` on every boot,
+  see `ensureForeignKey()`) rather than create-once-and-skip, so schema.ts constraint
+  changes propagate to existing databases automatically.
+- ✅ `SCRUM-41`: `SyncGateway.handleJoin` now checks `DocsService.findAccessible()`
+  after token verification — a valid token no longer implies access to an arbitrary
+  `docId`. No access (or a `docId` that isn't a real `docs` row at all — same response
+  either way, no enumeration) rejects with `{type:'error', code:'forbidden'}`, a new
+  code distinct from `unauthorized` (bad/missing token). This closes the original
+  epic's zero-authorization gap: a client can no longer implicitly create/join any doc
+  it invents — `docId` must already exist via `POST /docs`. Updated
+  `sync`/`sync-fanout`/`reconnect`/`convergence`/`persistence`/`persistence-restore`
+  e2e specs to register a real user and own (or get invited to) a real doc before
+  joining, rather than a bare signed token; `client/index.html` now requires `?doc=`
+  the same way it already required `?token=`.
+- ✅ `SCRUM-42`: `test/full-lifecycle.e2e-spec.ts` — one continuous scenario (not
+  several independent `it()`s, since each step depends causally on the last) proving
+  register → login → create doc → join via WS with a token → edit → list docs →
+  invite a collaborator → the collaborator can also list and join, all compose
+  correctly together rather than just passing in isolation.
+- ✅ `SCRUM-43`: `docs/adr/0006-auth-strategy.md` — JWT-vs-sessions, bcrypt-vs-Argon2id,
+  and why `join`'s token lives in an application-level message rather than a header or
+  query param (browsers can't set custom headers on a WS handshake; query params leak
+  into logs).
+
+`LAT-E2` is now complete — all nine tickets (SCRUM-36 through SCRUM-43) done.
 
 `LAT-E3` / `LAT-E4` (horizontal scaling, persistence & offline sync) — same as before,
 already absorbed into `LAT-E1B`'s Redis fan-out and Postgres snapshotting. No separate
 work planned under those numbers.
 
-**Not started:**
-- `LAT-E5`: Product polish & launch
+**Not started (next sprint — `LAT-E5`, repurposed: Live Presence & Cursors):**
+Repurposes the `LAT-E5` slot from the original roadmap ("Product polish & launch") —
+same pattern as `LAT-E2`'s repurposing. That broader original scope (deployment, rate
+limiting, a real schema migration tool, and the other gaps flagged honestly in
+ADR-0005/ADR-0006) is deferred to a future epic, not this one. Instead, this closes the
+one still-unbuilt v1 GOAL from `docs/DESIGN.md` itself — live presence and cursors,
+explicitly deferred out of every sprint so far (`src/sync/protocol.ts`: "no presence
+ticket yet"). Jira epic `SCRUM-44`.
+- ✅ `SCRUM-45`: `PresenceRegistryService` (`src/sync/presence-registry.service.ts`) —
+  tracks connected users per doc, in-memory, per-instance (parallel to
+  `ConnectionRegistryService`, not merged into it). Dedupes by `userId`: a user with
+  two tabs open on the same doc holds two `clientId`s but is one presence entry;
+  `add`/`remove` return whether this was the user's first/last connection to that doc,
+  so a caller (SCRUM-46) can tell "a real join/leave" from "just another tab."
+  Registered as a `SyncModule` provider now but not yet injected anywhere — SCRUM-46
+  wires it into `SyncGateway`.
+- ✅ `SCRUM-46`: Extended `protocol.ts` with `cursor` (client→server, raw text
+  position — not CRDT-anchored, see ADR-0007 for that scope boundary) and `presence`
+  (server→client roster). `SyncGateway.handleJoin` sends the joining client its own
+  presence snapshot, then broadcasts to other local clients only if this was the
+  user's genuinely first connection to the doc (`PresenceRegistryService.add`'s return
+  value) — a second tab doesn't spam a redundant roster update. `handleDisconnect`
+  mirrors this on the way out. Cursor updates go through a new
+  `CursorThrottleService` (leading + trailing throttle, `CURSOR_THROTTLE_MS`,
+  default 100ms — same "needs empirical tuning" caveat as `SNAPSHOT_INTERVAL_MS`) so
+  rapid mouse/keyboard movement doesn't flood every other client one-for-one. All
+  local-instance-only for now — SCRUM-47 adds cross-instance fan-out. Also fixed a
+  latent test-infra bug this surfaced: `test/helpers/ws.ts`'s `waitForMessage` used a
+  fresh `.once('message')` per call, which silently drops messages arriving in the
+  same tick as a prior one (exactly what happens now that `joined` and `presence` are
+  sent back-to-back) — replaced with a proper per-socket FIFO queue.
+- ⏳ `SCRUM-47`: Redis fan-out for presence/cursor updates across server instances —
+  reuses the existing always-through-Redis pattern (ADR-0005 §2), not a special-cased
+  local-only path
+- ⏳ `SCRUM-48`: Minimal presence UI in `client/index.html` — a "currently viewing"
+  list + lightweight cursor indicator, deliberately not a full rendered caret overlay
+  (not feasible in a plain `<textarea>`, and not the harness's job)
+- ⏳ `SCRUM-49`: e2e tests — presence snapshot, join/leave notifications, cursor
+  throttling, cross-instance correctness (extending the `sync-fanout.e2e-spec.ts`
+  pattern)
+- ⏳ `SCRUM-50`: ADR — presence & cursor design decisions (ephemeral-only, no Postgres
+  persistence; Redis fan-out reuse; throttling approach; minimal client scope)
 
 ## Conventions Established So Far
 
