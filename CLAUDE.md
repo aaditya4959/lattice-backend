@@ -339,12 +339,79 @@ infrastructure — separate, larger, not-yet-scoped efforts. Jira epic `SCRUM-51
   `NODE_ENV=development` (needed no changes) and Jest already sets `NODE_ENV=test`
   on its own, so local dev and the e2e/unit suites are both unaffected by
   construction, not by a test-specific carve-out in application code.
-- ⏳ `SCRUM-55`: `DocsModule`: remove a collaborator (invite exists, remove doesn't)
-- ⏳ `SCRUM-56`: Rate limiting on `/auth/register` / `/auth/login`
-- ⏳ `SCRUM-57`: `GET /health` — Postgres/Redis connectivity check
-- ⏳ `SCRUM-58`: Basic load test (k6) + empirically tune `SNAPSHOT_INTERVAL_MS` /
-  `CURSOR_THROTTLE_MS` — closes `docs/DESIGN.md` §8's open question
-- ⏳ `SCRUM-59`: ADR — production hardening decisions
+- ✅ `SCRUM-55`: `DELETE /docs/:id/collaborators/:userId` — two allowed actors, not
+  just the owner: the owner removing anyone, or a collaborator removing themselves
+  (leaving a doc they don't own). The owner can never be the target regardless of who's
+  asking (400, checked before the owner-or-self authorization check, since "you can't
+  remove the owner" is unconditional, not just "a non-owner can't") — a doc without an
+  owner has no one left to authorize future changes to it; `DELETE /docs/:id` is the
+  only way to remove them. `DocsService.removeCollaborator` returns whether a row was
+  actually deleted, so a non-collaborator target fails cleanly with 404 rather than
+  silently succeeding. Same 404-not-a-leak pattern as the rest of `DocsController` for
+  a requester with zero access to the doc at all.
+- ✅ `SCRUM-56`: Rate limiting on `POST /auth/register`/`POST /auth/login` via
+  `@nestjs/throttler` (v6.5.0 — latest supporting NestJS 11). `ThrottlerModule`
+  registered inside `AuthModule` (not globally in `AppModule`), `ThrottlerGuard`
+  applied per-route via `@UseGuards` directly on `register`/`login` — `GET /auth/me`
+  stays unguarded, it's a read of already-proven identity, not a credential guess.
+  5 requests/60s per (IP, route), a conservative OWASP-ASVS-typical anti-brute-force
+  threshold, not an empirically load-tested figure the way `SCRUM-58`'s intervals are
+  — brute-force resistance depends on attacker cost, not server capacity, so there's no
+  analogous "load test until it breaks" methodology here. `@nestjs/throttler`'s default
+  key includes the handler name, so register/login are separate buckets — confirmed no
+  existing e2e test exceeds 3 calls to either in one run, comfortably under the limit.
+  New `test/rate-limit.e2e-spec.ts` proves the *actual* shipped default end-to-end
+  (not a test-only override): 5 successful calls then a 429 on the 6th, for both
+  endpoints independently, plus a control test proving `/auth/me` stays unaffected.
+- ✅ `SCRUM-57`: `GET /health` (`src/health/`, unauthenticated) — checks real Postgres
+  (`SELECT 1`) and Redis (`PING`) connectivity in parallel, 200 with
+  `{status:'ok', postgres:'ok', redis:'ok'}` if both succeed, 503 naming exactly which
+  dependency failed and why otherwise (thrown as a `ServiceUnavailableException` with
+  the result object as its body, since Nest always sends a normal handler return value
+  with the success status code regardless of what the body says). `SyncModule` now
+  exports `redisProviders` so `HealthModule` can inject `REDIS_PUBLISHER` for the ping
+  without a separate `RedisModule` just for two provider lines — matches the existing
+  pattern of importing a whole domain module for one piece of it (`SyncModule` already
+  does this for `AuthModule`/`DocsModule`). E2e failure-path tests spy a rejection onto
+  the exact same injected `PG_POOL`/`REDIS_PUBLISHER` instances `HealthController`
+  actually uses, rather than trying to physically break the mocked pg-mem/ioredis-mock
+  clients (their disconnect semantics aren't a reliable stand-in for a real network
+  failure). Also manually verified against real Postgres + Redis (`curl` against the
+  compiled build).
+- ✅ `SCRUM-58`: `load-test/sync-load-test.js` (k6) — provisions real users/docs
+  through the actual REST API in `setup()`, then holds a real WebSocket connection per
+  virtual user through `/sync`, sending cursor updates and edits at a steady simulated
+  cadence. `update` messages need genuinely valid Yjs binary (`SyncGateway.handleUpdate`
+  calls `Y.applyUpdate()` directly — garbage bytes throw), which k6's JS runtime can't
+  produce itself (no real `yjs` package available inside it), so
+  `load-test/update-fixtures.json` holds ten pre-baked valid updates generated ahead of
+  time with the app's real `yjs` dependency. Run against real local Postgres/Redis (not
+  mocks) at roughly double the concurrency the untuned placeholders were ever exercised
+  against (20 VUs / 5 docs vs. `docs/DESIGN.md`'s target 2–10 users/doc) — both
+  mechanisms held up with zero errors at settings meaningfully tighter than the shipped
+  defaults, giving real margin to tune down. **`SNAPSHOT_INTERVAL_MS`: 2000 → 1000**
+  (500ms held up cleanly with consistent, non-growing overhead; 1000ms roughly halves
+  the old crash-loss window while staying inside the validated range, not at its edge).
+  **`CURSOR_THROTTLE_MS`: 100 → 75** (50ms held up cleanly too — server capacity was
+  never the binding constraint at this scale, so the exact number is really a UX call
+  bounded by "does the server comfortably handle it," which the test answers
+  affirmatively well below 75ms). Full methodology and exact numbers in
+  `load-test/README.md`. Setup provisioning many users from one k6 "client" needs
+  `AUTH_RATE_LIMIT_MAX` (SCRUM-56) overridden for the run — a legitimately different
+  concern from production brute-force protection, documented in the load-test README,
+  not a conflict between the two tickets.
+- ✅ `SCRUM-59`: `docs/adr/0008-production-hardening.md` — the migration-tool cutover
+  and version choice (SCRUM-53), the fail-fast env-var strategy (SCRUM-54), the
+  rate-limiting approach (SCRUM-56), and the load-testing methodology/results
+  (SCRUM-58), each with Alternatives Considered; Consequences section flags the
+  rate-limit/cursor-throttle numbers as ultimately judgment calls a load test alone
+  can't fully settle, the remaining `node-pg-migrate` transitive `glob` advisory as
+  accepted risk, `requireEnv`'s unset-`NODE_ENV`-is-dev-like assumption as worth
+  revisiting if a new deployment path is ever added, and the auth rate limiter's
+  in-memory (not cross-instance) storage as a known gap if genuine horizontal scaling
+  is added later.
+
+`LAT-E6` is now complete — all eight tickets (SCRUM-52 through SCRUM-59) done.
 
 ## Conventions Established So Far
 

@@ -17,10 +17,11 @@ export const SNAPSHOT_INTERVAL_MS = Symbol('SNAPSHOT_INTERVAL_MS');
  * at the moment the timer fires — always current, since `Y.Doc` is a live mutable
  * object, not a value snapshotted at schedule time.
  *
- * `intervalMs` is a placeholder default, not a tuned value — DESIGN.md §8 explicitly
- * flags the right debounce interval as needing empirical tuning once load-testing is
- * in place. Injected via SNAPSHOT_INTERVAL_MS so it's overridable (env var in
- * production, a short value in tests) without touching this class.
+ * `intervalMs` defaults to a value tuned via SCRUM-58's k6 load test (see
+ * persistence.module.ts and load-test/README.md), not the original untuned
+ * placeholder DESIGN.md §8 flagged. Injected via SNAPSHOT_INTERVAL_MS so it's
+ * overridable (env var in production, a short value in tests) without touching this
+ * class.
  *
  * Ticket: SCRUM-30 (LAT-E1B)
  */

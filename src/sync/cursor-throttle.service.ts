@@ -28,9 +28,9 @@ interface PendingBroadcast {
  * closes, rather than dropped — without a trailing edge, a cursor that stops moving
  * mid-window would appear frozen at a stale position for up to `intervalMs`.
  *
- * `intervalMs` is a placeholder default, not a tuned value — same caveat as
- * SNAPSHOT_INTERVAL_MS (DESIGN.md §8 flags this kind of interval as needing empirical
- * tuning once load-testing is in place).
+ * `intervalMs` defaults to a value tuned via SCRUM-58's k6 load test (see
+ * sync.module.ts and load-test/README.md), not the original untuned placeholder
+ * DESIGN.md §8 flagged.
  *
  * Ticket: SCRUM-46 (LAT-E5)
  */

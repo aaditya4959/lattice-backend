@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -83,6 +84,37 @@ export class DocsController {
     const doc = await this.requireAccessible(id, request.user.sub);
     this.requireOwner(doc, request.user.sub, 'invite collaborators');
     return this.docs.inviteCollaborator(id, dto.email);
+  }
+
+  /**
+   * Two allowed actors, not just the owner: the owner removing anyone, or a
+   * collaborator removing themselves (leaving a doc they don't own). The owner can
+   * never be the target — deleting the doc (DELETE /docs/:id) is the only way to
+   * remove them, since a doc without an owner has no one left to authorize future
+   * changes to it.
+   */
+  @Delete(':id/collaborators/:userId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async removeCollaborator(
+    @Req() request: AuthenticatedRequest,
+    @Param('id') id: string,
+    @Param('userId') targetUserId: string,
+  ): Promise<void> {
+    const doc = await this.requireAccessible(id, request.user.sub);
+    if (targetUserId === doc.ownerId) {
+      throw new BadRequestException(
+        "Can't remove the owner — delete the doc instead (DELETE /docs/:id)",
+      );
+    }
+    if (doc.ownerId !== request.user.sub && request.user.sub !== targetUserId) {
+      throw new ForbiddenException(
+        'Only the owner can remove a different collaborator',
+      );
+    }
+    const removed = await this.docs.removeCollaborator(id, targetUserId);
+    if (!removed) {
+      throw new NotFoundException('Not a collaborator on this doc');
+    }
   }
 
   /**

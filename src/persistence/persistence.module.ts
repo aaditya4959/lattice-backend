@@ -16,9 +16,15 @@ import {
 } from './snapshot-scheduler.service';
 import { SnapshotService } from './snapshot.service';
 
+// Tuned via SCRUM-58's k6 load test (load-test/sync-load-test.js), not the original
+// placeholder — 500ms held up cleanly (zero errors, ~600ms actual write cadence, no
+// growing backlog) at 20 concurrent users across 5 docs, double the concurrency the
+// untuned 2000ms default was ever exercised against. 1000ms keeps real margin below
+// that tested floor while roughly halving the previous placeholder's crash-loss
+// window. See load-test/README.md for the full methodology and results.
 const snapshotIntervalProvider: Provider = {
   provide: SNAPSHOT_INTERVAL_MS,
-  useValue: Number(process.env.SNAPSHOT_INTERVAL_MS ?? 2000),
+  useValue: Number(process.env.SNAPSHOT_INTERVAL_MS ?? 1000),
 };
 
 // node-pg-migrate v8+ is ESM-only ("type": "module", import.meta.dirname in a file

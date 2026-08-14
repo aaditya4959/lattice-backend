@@ -141,4 +141,18 @@ export class DocsService {
 
     return { userId: user.id, email: user.email, role: COLLABORATOR_ROLE };
   }
+
+  /**
+   * Returns whether a row was actually deleted — lets the caller (DocsController)
+   * distinguish "removed" from "wasn't a collaborator in the first place" (SCRUM-55's
+   * "removing a nonexistent collaborator fails cleanly" acceptance criteria) without a
+   * separate existence check first.
+   */
+  async removeCollaborator(docId: string, userId: string): Promise<boolean> {
+    const result = await this.pool.query(
+      'DELETE FROM doc_collaborators WHERE doc_id = $1 AND user_id = $2',
+      [docId, userId],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
 }
