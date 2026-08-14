@@ -6,7 +6,7 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
-    "build": "nest build",
+    "build": "nest build && tsc -p tsconfig.migrations.json",
     "start": "nest start",
     "start:dev": "nest start --watch",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
@@ -26,6 +26,7 @@
     "class-validator": "^0.15.1",
     "ioredis": "^5.11.1",
     "lib0": "^0.2.117",
+    "node-pg-migrate": "^7.9.1",
     "pg": "^8.23.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",

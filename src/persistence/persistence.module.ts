@@ -1,21 +1,15 @@
+import * as path from 'node:path';
 import {
   Inject,
+  Logger,
   Module,
   OnModuleDestroy,
   OnModuleInit,
   Provider,
 } from '@nestjs/common';
+import { runner } from 'node-pg-migrate';
 import { Pool } from 'pg';
-import { isDuplicateObject } from './pg-errors';
 import { PG_POOL, postgresProviders } from './postgres.provider';
-import {
-  DOC_COLLABORATORS_DOC_ID_FK_SQL,
-  DOC_COLLABORATORS_SCHEMA_SQL,
-  DOC_SNAPSHOTS_DOC_ID_FK_SQL,
-  DOC_SNAPSHOTS_SCHEMA_SQL,
-  DOCS_SCHEMA_SQL,
-  USERS_SCHEMA_SQL,
-} from './schema';
 import {
   SnapshotSchedulerService,
   SNAPSHOT_INTERVAL_MS,
@@ -26,6 +20,81 @@ const snapshotIntervalProvider: Provider = {
   provide: SNAPSHOT_INTERVAL_MS,
   useValue: Number(process.env.SNAPSHOT_INTERVAL_MS ?? 2000),
 };
+
+// node-pg-migrate v8+ is ESM-only ("type": "module", import.meta.dirname in a file
+// transitively required by runner() even though we never call the affected
+// CLI-scaffolding feature) — a hard syntax-level incompatibility with Jest's CJS
+// transform, not fixable via transformIgnorePatterns (verified directly: that patch
+// fixes a plain `import` but not `import.meta`). v7.x is the last "type": "commonjs"
+// release, at the cost of losing v9's advisoryLockMode: 'wait' option (only a binary
+// noLock: boolean exists in v7's types) — MIGRATION_LOCK_RETRY_* below hand-rolls the
+// same "wait for the concurrent migration to finish" semantics on top of v7's
+// fail-fast default. Verified against real Postgres: two genuinely concurrent
+// instances both succeed across repeated runs with this wrapper; without it, one
+// instance crashes on boot every time with exactly the message matched below.
+//
+// Expected benign log noise on the losing side of a lock race: each `runner()`
+// call's own `finally` unconditionally tries to release the advisory lock, so a
+// call that lost the race and never held it logs "Failed to release migration
+// lock" as a `logger.warn` — caught and swallowed inside node-pg-migrate itself
+// (dist/runner.js), never thrown, so it doesn't reach `isMigrationLockError` and
+// doesn't affect the outcome (verified: still followed by a successful boot).
+const MIGRATION_LOCK_ERROR = 'Another migration is already running';
+const MIGRATION_LOCK_RETRY_DELAY_MS = 200;
+const MIGRATION_LOCK_MAX_ATTEMPTS = 15;
+
+function isMigrationLockError(err: unknown): boolean {
+  return err instanceof Error && err.message.includes(MIGRATION_LOCK_ERROR);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// v7.9.1 bundles no TS/ESM loader (unlike v9's `jiti`) — it just plain `require()`s
+// each migration file, so it can only load `.ts` migrations in an environment that
+// already has a `.ts` require hook installed (`nest start`'s ts-node, or ts-jest under
+// Jest). Verified directly: booting the real compiled build (`node dist/main.js`,
+// exactly what the production Docker image runs — see Dockerfile, which ships only
+// `dist/`) crashed with a syntax error trying to `require()` a raw `.ts` migration
+// file, since plain `node` has no such hook. `__filename` reveals which situation
+// we're in: ts-node/ts-jest preserve the original `.ts` path, while a fully compiled
+// run's `__filename` ends in `.js` — so route to the matching, always-loadable
+// migrations directory: source `.ts` under `nest start`/tests, or the compiled `.js`
+// copy (`tsconfig.migrations.json` → `dist/migrations`, run as an extra step of `npm
+// run build`, sibling of this compiled file's own `dist/persistence`) in production.
+const MIGRATIONS_DIR = __filename.endsWith('.ts')
+  ? path.join(process.cwd(), 'migrations')
+  : path.join(__dirname, '..', 'migrations');
+
+/**
+ * Module-scope, not instance-scope: guards against re-running migrations when
+ * multiple `PersistenceModule` instances share one process — every e2e test file
+ * creates a fresh NestJS `TestingModule` per `it()` block, all against the SAME
+ * mocked `pg-mem` db (test/jest.setup.ts). A real app boot only ever calls
+ * `onModuleInit` once per process anyway, so this is a no-op there.
+ *
+ * Holds the in-flight *promise*, not a boolean — some e2e specs
+ * (`sync-fanout.e2e-spec.ts`) build two `TestingModule`s concurrently via
+ * `Promise.all`, so two `onModuleInit` calls can both observe "not migrated yet"
+ * before either finishes. A boolean set only after `runner()` resolves doesn't close
+ * that window; every caller awaiting the same promise does, since the second caller
+ * never starts its own `runner()` call in the first place. Verified directly: with a
+ * boolean guard, concurrent instantiation intermittently hit "Table pgmigrations
+ * already has a primary key" (two migration runs racing against the same mocked db).
+ *
+ * The underlying need for *some* guard is a `pg-mem` gap: node-pg-migrate's own
+ * rerun-idempotency check for its `pgmigrations` tracking table queries
+ * `information_schema.table_constraints` for an existing primary key — the exact
+ * same view `pg-mem` doesn't populate correctly that was already documented as
+ * broken for FK checks (SCRUM-36). Verified directly: a second `runner()` call
+ * against an already-migrated `pg-mem` db fails with "already has a primary key,"
+ * since the check that should have short-circuited it always reports "missing."
+ * Real Postgres populates that view correctly and doesn't need this guard, but it's
+ * harmless there too — the underlying `pgmigrations` table already reflects nothing
+ * left to run, so a second real call would just log "No migrations to run!" anyway.
+ */
+let migrationPromise: Promise<void> | null = null;
 
 @Module({
   providers: [
@@ -40,103 +109,55 @@ const snapshotIntervalProvider: Provider = {
   exports: [SnapshotService, SnapshotSchedulerService, PG_POOL],
 })
 export class PersistenceModule implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(PersistenceModule.name);
+
   constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
 
-  /** Idempotent (CREATE ... IF NOT EXISTS) — see schema.ts for why this isn't a real migration tool yet. */
+  /**
+   * Runs pending migrations from `migrations/` (SCRUM-53) — replaces the old ad hoc
+   * `CREATE ... IF NOT EXISTS` bootstrap (schema.ts), which had no schema history, no
+   * safe way to run a destructive change, and had already needed one-off workarounds
+   * for `pg-mem` quirks and a real concurrent-boot race (SCRUM-52).
+   */
   async onModuleInit(): Promise<void> {
-    // Dependency order matters: docs.owner_id references users, doc_collaborators
-    // references both docs and users, and the doc_snapshots FK references docs.
-    await this.ensureSchemaObject('tables', 'users', USERS_SCHEMA_SQL);
-    await this.ensureSchemaObject('tables', 'docs', DOCS_SCHEMA_SQL);
-    await this.ensureSchemaObject(
-      'tables',
-      'doc_collaborators',
-      DOC_COLLABORATORS_SCHEMA_SQL,
-    );
-    await this.ensureSchemaObject(
-      'tables',
-      'doc_snapshots',
-      DOC_SNAPSHOTS_SCHEMA_SQL,
-    );
-    await this.ensureForeignKey(
-      'doc_collaborators',
-      'doc_collaborators_doc_id_fkey',
-      DOC_COLLABORATORS_DOC_ID_FK_SQL,
-    );
-    await this.ensureForeignKey(
-      'doc_snapshots',
-      'doc_snapshots_doc_id_fkey',
-      DOC_SNAPSHOTS_DOC_ID_FK_SQL,
-    );
-  }
-
-  /**
-   * Checked explicitly rather than just relying on "CREATE TABLE IF NOT EXISTS" being a
-   * no-op when re-run: avoids a redundant DDL round-trip once the table already exists
-   * (real Postgres), and works around a pg-mem limitation where re-running this exact
-   * DDL against a db that already has the table throws, even though nothing would
-   * actually change (harmless in production, but every app instance booted in an e2e
-   * test shares one mocked db — see test/jest.setup.ts).
-   */
-  private async ensureSchemaObject(
-    catalog: 'tables',
-    name: string,
-    ddl: string,
-  ): Promise<void> {
-    const exists = async (): Promise<boolean> => {
-      const result = await this.pool.query(
-        `SELECT 1 FROM information_schema.${catalog} WHERE table_name = $1`,
-        [name],
-      );
-      return result.rows.length > 0;
-    };
-
-    if (await exists()) return;
-
-    try {
-      await this.pool.query(ddl);
-    } catch (err) {
-      // Two instances can both pass the check above before either has created the
-      // table — a real race if multiple real server instances boot simultaneously
-      // against a fresh Postgres, too. Only swallow if the table exists now, meaning
-      // someone else won the race; otherwise this is a genuine failure.
-      if (await exists()) return;
-      throw err;
+    if (!migrationPromise) {
+      migrationPromise = this.runMigrations();
     }
+    await migrationPromise;
   }
 
-  /**
-   * Unlike tables, FK constraints hold no data of their own, so it's always safe to
-   * drop and recreate one — that makes this self-healing when the constraint's
-   * definition changes (e.g. adding ON DELETE CASCADE for SCRUM-40), unlike the
-   * check-then-skip pattern above, which would leave an already-created constraint on
-   * its old definition forever. `table` is needed for the DROP, since `ALTER TABLE ...
-   * DROP CONSTRAINT` requires naming the table it's dropped from.
-   *
-   * SCRUM-52: the ADD below can race when multiple real instances boot concurrently
-   * against the same real Postgres — both can pass the DROP before either re-adds,
-   * and whichever ADD runs second fails with "already exists" (Postgres error 42710).
-   * That failure is safe to swallow, not a genuine problem: every instance runs this
-   * exact same DDL, so "already exists" means a different instance's ADD already won
-   * the race and installed the identical definition this one was about to. Verified
-   * this is precisely the failure mode against real Postgres, and confirmed `pg-mem`
-   * can't reproduce it at all (tolerates a duplicate `ADD CONSTRAINT` silently), so
-   * this catch only ever engages against real infra — exactly where the race can
-   * actually happen.
-   */
-  private async ensureForeignKey(
-    table: string,
-    constraintName: string,
-    addConstraintDdl: string,
-  ): Promise<void> {
-    await this.pool.query(
-      `ALTER TABLE ${table} DROP CONSTRAINT IF EXISTS ${constraintName}`,
-    );
+  private async runMigrations(): Promise<void> {
+    const client = await this.pool.connect();
     try {
-      await this.pool.query(addConstraintDdl);
-    } catch (err) {
-      if (isDuplicateObject(err)) return;
-      throw err;
+      // Multiple real instances booting concurrently against the same real Postgres
+      // must ALL succeed, not have whichever loses the advisory-lock race crash on
+      // boot — the same concurrent-boot correctness SCRUM-52 fixed narrowly for one
+      // FK constraint, now handled for the whole schema. v7 has no built-in "wait"
+      // mode (see comment above), so this retries on the exact lock-contention error
+      // instead.
+      for (let attempt = 1; ; attempt++) {
+        try {
+          await runner({
+            dbClient: client,
+            migrationsTable: 'pgmigrations',
+            dir: MIGRATIONS_DIR,
+            direction: 'up',
+            count: Infinity,
+            log: (msg: string) => this.logger.log(msg),
+          });
+          return;
+        } catch (err) {
+          if (
+            !isMigrationLockError(err) ||
+            attempt >= MIGRATION_LOCK_MAX_ATTEMPTS
+          ) {
+            throw err;
+          }
+          await delay(MIGRATION_LOCK_RETRY_DELAY_MS);
+        }
+      }
+    } finally {
+      client.release();
     }
   }
 
