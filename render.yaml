@@ -1,0 +1,23 @@
+# Render Blueprint — deploys the existing multi-stage Dockerfile's production stage
+# as-is. Real Postgres/Redis are NOT run here — those come from Neon and Upstash
+# respectively. `sync: false` env vars are secrets set manually in the Render
+# dashboard, never committed to this file.
+services:
+  - type: web
+    name: lattice-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: JWT_SECRET
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
