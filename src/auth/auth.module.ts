@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
+import { requireEnv } from '../config/require-env';
 import { PersistenceModule } from '../persistence/persistence.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
@@ -10,12 +11,14 @@ import { UsersService } from './users.service';
   imports: [
     PersistenceModule,
     JwtModule.register({
-      // Dev-only fallback — matches the pattern already used for REDIS_URL/DATABASE_URL
-      // (redis.provider.ts, postgres.provider.ts). Must be set to a real secret outside
-      // local dev; see docs/adr/0006-auth-strategy.md (SCRUM-42) for the full picture.
-      secret:
-        process.env.JWT_SECRET ??
+      // Dev-only fallback — matches the pattern used for REDIS_URL/DATABASE_URL
+      // (redis.provider.ts, postgres.provider.ts). Outside a recognized dev/test
+      // NODE_ENV, requireEnv() refuses to fall back at all (SCRUM-54, closing the gap
+      // docs/adr/0006-auth-strategy.md's Consequences flagged for all three together).
+      secret: requireEnv(
+        'JWT_SECRET',
         'dev-only-insecure-secret-do-not-use-in-production',
+      ),
       signOptions: { expiresIn: '24h' },
     }),
   ],
