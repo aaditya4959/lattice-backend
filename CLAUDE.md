@@ -249,6 +249,45 @@ ticket yet"). Jira epic `SCRUM-44`.
 
 `LAT-E5` is now complete — all six tickets (SCRUM-45 through SCRUM-50) done.
 
+**In progress (active sprint — `LAT-E6`, new: Production Hardening & Ops Readiness):**
+No original CLAUDE.md epic slot for this — the roadmap only ever defined `LAT-E0`
+through `LAT-E5`. Closes the gap between "every functional v1 goal from
+`docs/DESIGN.md` §2 is built" (true as of `LAT-E5`) and "actually safe to run for real
+users." Explicitly excludes a real product frontend and actual deployment
+infrastructure — separate, larger, not-yet-scoped efforts. Jira epic `SCRUM-51`.
+- ✅ `SCRUM-52`: Fixed a real concurrent-boot race found during `LAT-E5`'s real-infra
+  verification — `PersistenceModule.ensureForeignKey`'s `DROP CONSTRAINT IF EXISTS` +
+  `ADD CONSTRAINT` had no race protection, unlike the table-bootstrap path's
+  check-then-recheck pattern. Two instances booting concurrently against the same
+  real Postgres could both pass the DROP before either re-added the constraint,
+  and whichever `ADD` ran second failed with Postgres error `42710`
+  ("duplicate_object"). Fixed by catching that specific error and treating it as
+  success — every instance runs identical DDL, so "already exists" means a
+  different instance's `ADD` already won the race and installed the exact same
+  definition this one was about to. New `isDuplicateObject` helper in
+  `persistence/pg-errors.ts`, alongside the existing `isUniqueViolation`. An
+  advisory-lock-based approach was considered and rejected — `pg-mem` doesn't
+  implement `pg_advisory_lock` at all (verified directly), which would have forced
+  mock-specific workarounds; the catch-and-treat-as-success fix needs none, since
+  `pg-mem` also doesn't reproduce the duplicate-constraint error in the first place
+  (silently tolerates it), so the new code path only ever engages against real
+  Postgres — exactly where the race can happen. Verified empirically: a dedicated
+  concurrent-boot script (two genuine `node dist/main` processes launched
+  simultaneously against a freshly-dropped real Postgres, repeated across many
+  clean-database iterations) reproduced the failure in ~5/8 runs on the pre-fix
+  code and passed 10/10 with the fix.
+- ⏳ `SCRUM-53`: Replace the ad hoc idempotent schema bootstrap with a real migration
+  tool (e.g. `node-pg-migrate`) — flagged as technical debt since ADR-0005
+- ⏳ `SCRUM-54`: Harden the fail-open dev-secret pattern shared by `JWT_SECRET`,
+  `DATABASE_URL`, `REDIS_URL` — refuse to boot without them outside dev/test
+  (ADR-0006's flagged follow-up)
+- ⏳ `SCRUM-55`: `DocsModule`: remove a collaborator (invite exists, remove doesn't)
+- ⏳ `SCRUM-56`: Rate limiting on `/auth/register` / `/auth/login`
+- ⏳ `SCRUM-57`: `GET /health` — Postgres/Redis connectivity check
+- ⏳ `SCRUM-58`: Basic load test (k6) + empirically tune `SNAPSHOT_INTERVAL_MS` /
+  `CURSOR_THROTTLE_MS` — closes `docs/DESIGN.md` §8's open question
+- ⏳ `SCRUM-59`: ADR — production hardening decisions
+
 ## Conventions Established So Far
 
 - **Git**: trunk-based, `main` protected (PR + passing CI required, no bypass),

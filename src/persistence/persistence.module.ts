@@ -6,6 +6,7 @@ import {
   Provider,
 } from '@nestjs/common';
 import { Pool } from 'pg';
+import { isDuplicateObject } from './pg-errors';
 import { PG_POOL, postgresProviders } from './postgres.provider';
 import {
   DOC_COLLABORATORS_DOC_ID_FK_SQL,
@@ -111,6 +112,17 @@ export class PersistenceModule implements OnModuleInit, OnModuleDestroy {
    * check-then-skip pattern above, which would leave an already-created constraint on
    * its old definition forever. `table` is needed for the DROP, since `ALTER TABLE ...
    * DROP CONSTRAINT` requires naming the table it's dropped from.
+   *
+   * SCRUM-52: the ADD below can race when multiple real instances boot concurrently
+   * against the same real Postgres — both can pass the DROP before either re-adds,
+   * and whichever ADD runs second fails with "already exists" (Postgres error 42710).
+   * That failure is safe to swallow, not a genuine problem: every instance runs this
+   * exact same DDL, so "already exists" means a different instance's ADD already won
+   * the race and installed the identical definition this one was about to. Verified
+   * this is precisely the failure mode against real Postgres, and confirmed `pg-mem`
+   * can't reproduce it at all (tolerates a duplicate `ADD CONSTRAINT` silently), so
+   * this catch only ever engages against real infra — exactly where the race can
+   * actually happen.
    */
   private async ensureForeignKey(
     table: string,
@@ -120,7 +132,12 @@ export class PersistenceModule implements OnModuleInit, OnModuleDestroy {
     await this.pool.query(
       `ALTER TABLE ${table} DROP CONSTRAINT IF EXISTS ${constraintName}`,
     );
-    await this.pool.query(addConstraintDdl);
+    try {
+      await this.pool.query(addConstraintDdl);
+    } catch (err) {
+      if (isDuplicateObject(err)) return;
+      throw err;
+    }
   }
 
   /** Closes the pool's connections on app shutdown — without this, real `pg.Pool` sockets leak. */
