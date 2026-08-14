@@ -104,7 +104,7 @@ export class DocsService {
 
   /**
    * doc_collaborators/doc_snapshots both cascade off docs.id (ON DELETE CASCADE, see
-   * schema.ts) — a single DELETE here is enough, no manual cleanup of child rows.
+   * migrations/) — a single DELETE here is enough, no manual cleanup of child rows.
    */
   async delete(docId: string): Promise<void> {
     await this.pool.query('DELETE FROM docs WHERE id = $1', [docId]);
@@ -113,7 +113,7 @@ export class DocsService {
   /**
    * Every collaborator is added as an 'editor' — DESIGN.md's role model reserves
    * view-only for later, and only 'owner'/'editor' exist right now (see
-   * DOC_COLLABORATORS_SCHEMA_SQL). Owner-vs-collaborator authorization is the caller's
+   * migrations/..._create-doc-collaborators.ts). Owner-vs-collaborator authorization is the caller's
    * job (DocsController) — this method only resolves the invite and writes the row.
    */
   async inviteCollaborator(

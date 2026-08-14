@@ -17,6 +17,28 @@ jest.mock('pg', () => {
   const { newDb } = require('pg-mem');
   // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-assignment
   const db = newDb();
+  // `pg-mem` implements very few native Postgres functions (its own words) — advisory
+  // locks aren't among them (verified directly: `pg_advisory_lock`/
+  // `pg_try_advisory_lock` don't exist at all). node-pg-migrate (SCRUM-53) uses these
+  // to serialize concurrent migration runs against real Postgres; registered here as
+  // no-ops rather than in application code, matching this file's own established
+  // pattern — pg-mem is single-process/single-threaded within one test file, so
+  // there's no real concurrency for a lock to protect against in the first place, and
+  // this keeps PersistenceModule itself fully unaware it might be running against a
+  // mock.
+  for (const name of [
+    'pg_advisory_lock',
+    'pg_try_advisory_lock',
+    'pg_advisory_unlock',
+  ]) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+    db.public.registerFunction({
+      name,
+      args: ['int'],
+      returns: 'bool',
+      implementation: () => true,
+    });
+  }
   // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   return db.adapters.createPg();
 });

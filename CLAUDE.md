@@ -276,8 +276,48 @@ infrastructure — separate, larger, not-yet-scoped efforts. Jira epic `SCRUM-51
   simultaneously against a freshly-dropped real Postgres, repeated across many
   clean-database iterations) reproduced the failure in ~5/8 runs on the pre-fix
   code and passed 10/10 with the fix.
-- ⏳ `SCRUM-53`: Replace the ad hoc idempotent schema bootstrap with a real migration
-  tool (e.g. `node-pg-migrate`) — flagged as technical debt since ADR-0005
+- ✅ `SCRUM-53`: Replaced the ad hoc idempotent schema bootstrap (`schema.ts`, deleted)
+  with real migrations (`node-pg-migrate`, `migrations/*.ts` — one file per table,
+  FKs inline since this is a fresh sequence with no incremental-ticket ordering
+  constraint, unlike the old split-FK pattern SCRUM-40 had to work around).
+  **Version choice — v7.9.1, not the latest v9**: v8+ is ESM-only
+  (`"type": "module"`, `import.meta.dirname` inside a file `runner()` transitively
+  requires even though we never call the affected CLI-scaffolding feature) — a hard
+  syntax-level incompatibility with Jest's CJS transform, confirmed not fixable via
+  `transformIgnorePatterns` alone (that only fixes a plain `import`, not
+  `import.meta`). v7.x is the last `"type": "commonjs"` release. Cost: v7 has no
+  `advisoryLockMode: 'wait'` (v9-only; only a binary `noLock: boolean` exists in v7's
+  types) — replaced with a hand-rolled retry wrapper in `PersistenceModule` that
+  catches v7's fail-fast `"Another migration is already running"` and retries with a
+  short delay, achieving the same "all concurrent instances succeed" semantics.
+  `migrationPromise` (module-scope, not a class field) guards against a *same-process*
+  race too — some e2e specs (`sync-fanout.e2e-spec.ts`) build two `TestingModule`s
+  concurrently via `Promise.all`, and a boolean-based guard left a window where both
+  could observe "not migrated yet" before either finished; holding the in-flight
+  promise itself closes it (verified: intermittent "already has a primary key"
+  failures with a boolean, none across repeated runs with the promise).
+  Real bug caught specifically by testing the actual compiled build rather than only
+  the mocked test suite: v7.9.1 bundles no TS/ESM loader (unlike v9's `jiti`), so it
+  can only load `.ts` migrations in an environment with a `.ts` require hook already
+  installed (`nest start`'s ts-node, or ts-jest under Jest) — booting the real
+  production artifact (`node dist/main.js`, exactly what `Dockerfile`'s production
+  stage runs, shipping only `dist/`) crashed outright. Fixed by compiling
+  `migrations/*.ts` as an explicit extra build step (`tsconfig.migrations.json` →
+  `dist/migrations`, declarations/sourcemaps off since node-pg-migrate's default file
+  filter only ignores dotfiles and would otherwise try to `require()` the emitted
+  `.d.ts`/`.map` files too) and having `PersistenceModule` pick the matching
+  directory at runtime based on its own `__filename` extension (`.ts` → source
+  `migrations/`, still-compiled `.js` → `dist/migrations`).
+  Verified: full lint/typecheck/build/unit/e2e sweep green; a dedicated two-process
+  concurrent-boot test against a freshly-dropped real Postgres (the actual
+  `dist/main.js` build, not a spike script) succeeded across repeated runs, both
+  before and after the migrations-compile fix was needed to make it succeed at all;
+  `npm audit` on the final v7.9.1 dependency tree shows one remaining high-severity
+  transitive advisory (`glob`'s CLI `-c/--cmd` shell-injection flag, inside
+  node-pg-migrate's dependency tree) — accepted as out-of-scope since node-pg-migrate
+  only uses `glob` as a library to find migration files and never invokes its CLI;
+  the only fix is the v9 upgrade already rejected above for the ESM/Jest
+  incompatibility.
 - ⏳ `SCRUM-54`: Harden the fail-open dev-secret pattern shared by `JWT_SECRET`,
   `DATABASE_URL`, `REDIS_URL` — refuse to boot without them outside dev/test
   (ADR-0006's flagged follow-up)
