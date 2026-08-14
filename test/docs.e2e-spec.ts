@@ -516,4 +516,198 @@ describe('Docs (e2e)', () => {
         .expect(401);
     });
   });
+
+  describe('DELETE /docs/:id/collaborators/:userId', () => {
+    it('lets the owner remove a collaborator', async () => {
+      const owner = await registerAndLogin(
+        app,
+        `${Date.now()}-rm-owner@example.test`,
+      );
+      const collaborator = await registerAndLogin(
+        app,
+        `${Date.now()}-rm-collab@example.test`,
+      );
+      const createResponse = await request(app.getHttpServer())
+        .post('/docs')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ title: 'Removable' })
+        .expect(201);
+      const { id } = createResponse.body as DocResponseBody;
+      await request(app.getHttpServer())
+        .post(`/docs/${id}/invite`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ email: collaborator.email })
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .delete(`/docs/${id}/collaborators/${collaborator.userId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(204);
+
+      // No longer has access — same 404-not-a-leak pattern as everywhere else.
+      await request(app.getHttpServer())
+        .get(`/docs/${id}`)
+        .set('Authorization', `Bearer ${collaborator.token}`)
+        .expect(404);
+    });
+
+    it('lets a collaborator remove themselves (leave the doc)', async () => {
+      const owner = await registerAndLogin(
+        app,
+        `${Date.now()}-rm-owner2@example.test`,
+      );
+      const collaborator = await registerAndLogin(
+        app,
+        `${Date.now()}-rm-collab2@example.test`,
+      );
+      const createResponse = await request(app.getHttpServer())
+        .post('/docs')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ title: 'Leavable' })
+        .expect(201);
+      const { id } = createResponse.body as DocResponseBody;
+      await request(app.getHttpServer())
+        .post(`/docs/${id}/invite`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ email: collaborator.email })
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .delete(`/docs/${id}/collaborators/${collaborator.userId}`)
+        .set('Authorization', `Bearer ${collaborator.token}`)
+        .expect(204);
+
+      await request(app.getHttpServer())
+        .get(`/docs/${id}`)
+        .set('Authorization', `Bearer ${collaborator.token}`)
+        .expect(404);
+    });
+
+    it('rejects a non-owner removing a DIFFERENT collaborator with 403', async () => {
+      const owner = await registerAndLogin(
+        app,
+        `${Date.now()}-rm-owner3@example.test`,
+      );
+      const collaboratorA = await registerAndLogin(
+        app,
+        `${Date.now()}-rm-collabA@example.test`,
+      );
+      const collaboratorB = await registerAndLogin(
+        app,
+        `${Date.now()}-rm-collabB@example.test`,
+      );
+      const createResponse = await request(app.getHttpServer())
+        .post('/docs')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ title: 'Guarded removal' })
+        .expect(201);
+      const { id } = createResponse.body as DocResponseBody;
+      await request(app.getHttpServer())
+        .post(`/docs/${id}/invite`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ email: collaboratorA.email })
+        .expect(201);
+      await request(app.getHttpServer())
+        .post(`/docs/${id}/invite`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ email: collaboratorB.email })
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .delete(`/docs/${id}/collaborators/${collaboratorB.userId}`)
+        .set('Authorization', `Bearer ${collaboratorA.token}`)
+        .expect(403);
+
+      // Confirms the 403 actually blocked it — B still has access.
+      await request(app.getHttpServer())
+        .get(`/docs/${id}`)
+        .set('Authorization', `Bearer ${collaboratorB.token}`)
+        .expect(200);
+    });
+
+    it('fails cleanly (404) removing a user who is not a collaborator', async () => {
+      const owner = await registerAndLogin(
+        app,
+        `${Date.now()}-rm-owner4@example.test`,
+      );
+      const stranger = await registerAndLogin(
+        app,
+        `${Date.now()}-rm-stranger@example.test`,
+      );
+      const createResponse = await request(app.getHttpServer())
+        .post('/docs')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ title: 'No such collaborator' })
+        .expect(201);
+      const { id } = createResponse.body as DocResponseBody;
+
+      await request(app.getHttpServer())
+        .delete(`/docs/${id}/collaborators/${stranger.userId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(404);
+    });
+
+    it('rejects removing the owner via this endpoint with 400, even by the owner themselves', async () => {
+      const owner = await registerAndLogin(
+        app,
+        `${Date.now()}-rm-owner5@example.test`,
+      );
+      const createResponse = await request(app.getHttpServer())
+        .post('/docs')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ title: "Can't remove owner" })
+        .expect(201);
+      const { id } = createResponse.body as DocResponseBody;
+
+      await request(app.getHttpServer())
+        .delete(`/docs/${id}/collaborators/${owner.userId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(400);
+
+      // Doc is untouched — owner still has access.
+      await request(app.getHttpServer())
+        .get(`/docs/${id}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .expect(200);
+    });
+
+    it('returns 404 (not a data leak) removing a collaborator from a doc the requester has no access to', async () => {
+      const owner = await registerAndLogin(
+        app,
+        `${Date.now()}-rm-owner6@example.test`,
+      );
+      const collaborator = await registerAndLogin(
+        app,
+        `${Date.now()}-rm-collab6@example.test`,
+      );
+      const stranger = await registerAndLogin(
+        app,
+        `${Date.now()}-rm-stranger6@example.test`,
+      );
+      const createResponse = await request(app.getHttpServer())
+        .post('/docs')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ title: 'Locked removal' })
+        .expect(201);
+      const { id } = createResponse.body as DocResponseBody;
+      await request(app.getHttpServer())
+        .post(`/docs/${id}/invite`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ email: collaborator.email })
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .delete(`/docs/${id}/collaborators/${collaborator.userId}`)
+        .set('Authorization', `Bearer ${stranger.token}`)
+        .expect(404);
+    });
+
+    it('rejects without a token', async () => {
+      await request(app.getHttpServer())
+        .delete(
+          '/docs/00000000-0000-0000-0000-000000000000/collaborators/00000000-0000-0000-0000-000000000000',
+        )
+        .expect(401);
+    });
+  });
 });

@@ -3,11 +3,18 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { DocsModule } from './docs/docs.module';
+import { HealthModule } from './health/health.module';
 import { SyncModule } from './sync/sync.module';
 import { PersistenceModule } from './persistence/persistence.module';
 
 @Module({
-  imports: [AuthModule, DocsModule, SyncModule, PersistenceModule],
+  imports: [
+    AuthModule,
+    DocsModule,
+    SyncModule,
+    PersistenceModule,
+    HealthModule,
+  ],
   controllers: [AppController],
   providers: [AppService],
 })

@@ -20,6 +20,7 @@
     "@nestjs/jwt": "^11.0.2",
     "@nestjs/platform-express": "^11.0.1",
     "@nestjs/platform-ws": "^11.1.28",
+    "@nestjs/throttler": "^6.5.0",
     "@nestjs/websockets": "^11.1.28",
     "bcrypt": "^6.0.0",
     "class-transformer": "^0.5.1",

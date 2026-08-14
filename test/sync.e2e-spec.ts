@@ -376,8 +376,8 @@ describe('SyncGateway (e2e)', () => {
       };
       aliceSocket.on('message', collector);
 
-      // A burst well within the default 100ms throttle window (CURSOR_THROTTLE_MS) —
-      // sent as fast as this loop can push frames onto the socket.
+      // A burst well within the default CURSOR_THROTTLE_MS throttle window (75ms,
+      // sync.module.ts) — sent as fast as this loop can push frames onto the socket.
       for (let position = 1; position <= 20; position++) {
         send(bobSocket, { type: 'cursor', docId, position });
       }

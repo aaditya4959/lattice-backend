@@ -13,12 +13,17 @@ import { RedisFanoutService } from './redis-fanout.service';
 import { redisProviders } from './redis.provider';
 import { SyncGateway } from './sync.gateway';
 
-// Placeholder default, not a tuned value — same caveat as SNAPSHOT_INTERVAL_MS
-// (persistence.module.ts): DESIGN.md §8 flags this kind of interval as needing
-// empirical tuning once load-testing is in place.
+// Tuned via SCRUM-58's k6 load test (load-test/sync-load-test.js), not the original
+// placeholder — 50ms held up cleanly (zero errors, ~1800 cursor messages/s received
+// server-wide) at double the concurrency the untuned 100ms default was ever exercised
+// against; server capacity was never the real constraint at this scale. 75ms is
+// meaningfully smoother live-cursor feedback than the old 100ms while keeping margin
+// above the tested 50ms floor — the actual choice of exactly how smooth is a UX
+// judgment a load test alone can't make, same caveat as auth.module.ts's rate-limit
+// threshold. See load-test/README.md.
 const cursorThrottleIntervalProvider: Provider = {
   provide: CURSOR_THROTTLE_MS,
-  useValue: Number(process.env.CURSOR_THROTTLE_MS ?? 100),
+  useValue: Number(process.env.CURSOR_THROTTLE_MS ?? 75),
 };
 
 @Module({
@@ -36,5 +41,8 @@ const cursorThrottleIntervalProvider: Provider = {
     RedisFanoutService,
     ...redisProviders,
   ],
+  // redisProviders exported so HealthModule (SCRUM-57) can inject REDIS_PUBLISHER for
+  // a connectivity ping without a separate RedisModule just for two provider lines.
+  exports: [...redisProviders],
 })
 export class SyncModule {}
