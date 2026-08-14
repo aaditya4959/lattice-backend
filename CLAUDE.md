@@ -318,9 +318,27 @@ infrastructure — separate, larger, not-yet-scoped efforts. Jira epic `SCRUM-51
   only uses `glob` as a library to find migration files and never invokes its CLI;
   the only fix is the v9 upgrade already rejected above for the ESM/Jest
   incompatibility.
-- ⏳ `SCRUM-54`: Harden the fail-open dev-secret pattern shared by `JWT_SECRET`,
-  `DATABASE_URL`, `REDIS_URL` — refuse to boot without them outside dev/test
-  (ADR-0006's flagged follow-up)
+- ✅ `SCRUM-54`: Hardened the fail-open dev-secret pattern shared by `JWT_SECRET`
+  (`auth.module.ts`), `DATABASE_URL` (`postgres.provider.ts`), and `REDIS_URL`
+  (`redis.provider.ts`) — closes the follow-up ADR-0006's Consequences flagged for
+  all three together rather than fixed piecemeal. New shared helper,
+  `src/config/require-env.ts`'s `requireEnv(name, devFallback)`: returns the env var
+  if set: if unset, falls back to the dev default only when `NODE_ENV` is
+  `'development'`/`'test'`/unset, otherwise throws a clear, fail-fast error naming
+  the missing var and current `NODE_ENV` (`require-env.spec.ts` covers all three
+  branches, including each of the recognized dev-like values individually).
+  Unset counts as dev-like, not just `'development'`/`'test'` — the actual
+  production Docker image sets `NODE_ENV=production` explicitly (`Dockerfile`), so
+  nothing that already boots the app for real is affected; verified directly against
+  the compiled `dist/main.js` build across five cases: all three vars set under
+  `NODE_ENV=production` boots; each var individually missing under
+  `NODE_ENV=production` refuses to boot with the expected message naming that exact
+  var; no `NODE_ENV` and nothing else set at all (bare local `node dist/main.js`,
+  matching `nest start`/`npm run start:dev` with no `NODE_ENV`) still boots via the
+  dev fallbacks. `docker-compose.yaml`'s dev `app` service already sets
+  `NODE_ENV=development` (needed no changes) and Jest already sets `NODE_ENV=test`
+  on its own, so local dev and the e2e/unit suites are both unaffected by
+  construction, not by a test-specific carve-out in application code.
 - ⏳ `SCRUM-55`: `DocsModule`: remove a collaborator (invite exists, remove doesn't)
 - ⏳ `SCRUM-56`: Rate limiting on `/auth/register` / `/auth/login`
 - ⏳ `SCRUM-57`: `GET /health` — Postgres/Redis connectivity check

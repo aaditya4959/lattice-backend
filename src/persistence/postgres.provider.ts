@@ -1,13 +1,15 @@
 import { Provider } from '@nestjs/common';
 import { Pool } from 'pg';
+import { requireEnv } from '../config/require-env';
 
 export const PG_POOL = Symbol('PG_POOL');
 
 function createPool(): Pool {
   return new Pool({
-    connectionString:
-      process.env.DATABASE_URL ??
+    connectionString: requireEnv(
+      'DATABASE_URL',
       'postgresql://lattice:lattice@localhost:5432/lattice',
+    ),
   });
 }
 

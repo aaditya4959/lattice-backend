@@ -1,11 +1,12 @@
 import { Provider } from '@nestjs/common';
 import Redis from 'ioredis';
+import { requireEnv } from '../config/require-env';
 
 export const REDIS_PUBLISHER = Symbol('REDIS_PUBLISHER');
 export const REDIS_SUBSCRIBER = Symbol('REDIS_SUBSCRIBER');
 
 function createRedisClient(): Redis {
-  return new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
+  return new Redis(requireEnv('REDIS_URL', 'redis://localhost:6379'));
 }
 
 /**
