@@ -14,7 +14,7 @@
  *
  * Ticket: SCRUM-54 (LAT-E6)
  */
-// Dummy commit 
+// Dummy commit 2
 const DEV_LIKE_NODE_ENVS = new Set(['development', 'test', '']);
 
 function isDevLikeEnvironment(): boolean {
